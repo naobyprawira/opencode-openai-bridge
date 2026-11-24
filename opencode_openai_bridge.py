@@ -25,6 +25,7 @@ from bridge_config import (
     BRIDGE_PORT,
     UPSTREAM_PORT,
     UPSTREAM_PROXY_URL,
+    UPSTREAM_ROTATE_URL,
     load_or_create_api_key,
     log,
 )
@@ -102,6 +103,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "upstream_port": UPSTREAM_PORT,
                     "mode": "bun-inference-passthrough",
                     "proxy_configured": bool(UPSTREAM_PROXY_URL),
+                    "rotate_webhook_configured": bool(UPSTREAM_ROTATE_URL),
                 },
             )
             return

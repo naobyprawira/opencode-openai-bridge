@@ -37,6 +37,8 @@ MODELS_URL = os.environ.get(
     "https://opencode.ai/inference/openai/v1/models",
 )
 UPSTREAM_PROXY_URL = os.environ.get("BRIDGE_UPSTREAM_PROXY", "").strip()
+UPSTREAM_ROTATE_URL = os.environ.get("BRIDGE_UPSTREAM_ROTATE_URL", "").strip()
+UPSTREAM_ROTATE_TOKEN = os.environ.get("BRIDGE_UPSTREAM_ROTATE_TOKEN", "").strip()
 
 REQUEST_TIMEOUT_SEC = float(os.environ.get("BRIDGE_REQUEST_TIMEOUT", "240"))
 SIGNATURE_TTL_SEC = float(os.environ.get("BRIDGE_SIGNATURE_TTL", "86400"))

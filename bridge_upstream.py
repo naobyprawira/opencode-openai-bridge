@@ -25,11 +25,14 @@ from bridge_config import (
     UPSTREAM_HOST,
     UPSTREAM_PORT,
     UPSTREAM_PROXY_URL,
+    UPSTREAM_ROTATE_TOKEN,
+    UPSTREAM_ROTATE_URL,
     log,
 )
 from bridge_protocol import (
     build_upstream_payload,
     extract_free_chat_models,
+    is_rate_limit_error,
     make_opencode_headers,
 )
 from bridge_signature import SIGNATURE
@@ -249,6 +252,26 @@ class ModelCatalogManager:
 MODELS_CATALOG = ModelCatalogManager()
 
 
+def _trigger_rotate_webhook(force: bool = False) -> bool:
+    if not UPSTREAM_ROTATE_URL:
+        return False
+    url = UPSTREAM_ROTATE_URL
+    if force:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}force=1"
+    headers = {"Content-Type": "application/json"}
+    if UPSTREAM_ROTATE_TOKEN:
+        headers["Authorization"] = f"Bearer {UPSTREAM_ROTATE_TOKEN}"
+    req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+    try:
+        log(f"Rate limit hit; calling upstream rotate webhook (force={force})...")
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return 200 <= r.status < 300
+    except Exception as exc:
+        log(f"Warning: upstream rotate webhook failed: {exc}")
+        return False
+
+
 def open_inference_with_retry(
     req: dict[str, Any], model_id: str
 ) -> tuple[
@@ -281,6 +304,14 @@ def open_inference_with_retry(
                 body = json.loads(raw) if raw else {"error": {"message": f"HTTP {st}"}}
             except Exception:
                 body = {"error": {"message": raw or f"HTTP {st}"}}
+            last_st, last_body = st, body
+            if (
+                is_rate_limit_error(st, body)
+                and UPSTREAM_ROTATE_URL
+                and attempt < 2
+                and _trigger_rotate_webhook(force=(attempt > 0))
+            ):
+                continue
             return st, None, None, body
         except TimeoutError:
             if conn is not None:
