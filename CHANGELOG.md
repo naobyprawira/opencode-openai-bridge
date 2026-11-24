@@ -5,6 +5,17 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-24
+
+### Added
+- Bundled canonical OpenCode v2 signature snapshot (`bridge_defaults.py`) and GitHub upstream tracker (`anomalyco/opencode` via `OPENCODE_UPDATE_URL` + `raw.githubusercontent.com`) in `bridge_signature.py`, removing `opencode` CLI as a hard runtime dependency.
+- Lightweight non-root `Dockerfile` (Python 3 + Bun only), `.dockerignore`, `docker-compose.yml`, and `render.yaml` free-tier blueprint with `BRIDGE_API_KEY` auth.
+- PaaS `PORT` fallback (`BRIDGE_PORT` -> `PORT` -> `29471`), `signature_source` on `/health`, and auth/signature source startup log.
+
+### Changed
+- Changed default `BRIDGE_SIGNATURE_CHECK_INTERVAL` to `86400` seconds (24h).
+- Kept `OPENCODE_BIN` optional (`install.sh` `--signature-mode auto|github|cli|static`); `BRIDGE_SIGNATURE_MODE=cli` preserves local CLI capture.
+
 ## [0.4.1] - 2026-11-24
 
 ### Added

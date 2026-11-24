@@ -20,28 +20,56 @@ opencode.ai/inference/openai/v1/chat/completions
 ### Why this stack?
 - **Python 3 stdlib** (`opencode_openai_bridge.py`) keeps zero external `pip` dependencies and manages auth, OpenAI protocol translation (`tools`, `tool_calls`, `reasoning_content`), and 8s SSE `: keepalive\n\n` heartbeats (prevents Cloudflare `524` idle timeouts).
 - **Bun** (`bun_upstream.js`) provides Bun's BoringSSL TLS/HTTP2 fingerprint required by `opencode.ai/inference/openai/v1/chat/completions` and streams SSE chunks live.
-- **Signature & format monitor** (`bridge_signature.py`) runs `opencode --standalone` against an ephemeral localhost listener at startup, on `BRIDGE_SIGNATURE_TTL`, or whenever `opencode --version` changes (checked every `BRIDGE_SIGNATURE_CHECK_INTERVAL` seconds). It auto-adapts `User-Agent`, static `x-*` headers, system prompt, and base tools, and logs `WARNING:` if OpenCode's request path or JSON call format drifts.
+- **Signature & format monitor** (`bridge_signature.py`) ships with a bundled canonical OpenCode v2 signature snapshot (`bridge_defaults.py`) and tracks upstream releases and prompt/header files from [`anomalyco/opencode`](https://github.com/anomalyco/opencode) every `BRIDGE_SIGNATURE_CHECK_INTERVAL` seconds (default `86400`s / 24h) — **requiring zero local `opencode` CLI binary**. It auto-adapts `User-Agent` and `system_prompt` and logs `WARNING:` if headers or format drift. Setting `BRIDGE_SIGNATURE_MODE=cli` (with optional `OPENCODE_BIN`) captures from a local CLI instead.
 
 ## Prerequisites
 
 - Python 3.10+
 - [Bun](https://bun.sh/) (auto-detected via `BUN_BIN`, `~/.bun/bin/bun`, `/usr/local/bin/bun`, `/opt/homebrew/bin/bun`, or `PATH`)
-- [OpenCode CLI](https://opencode.ai/) (auto-detected via `OPENCODE_BIN`, `~/.opencode/bin/opencode`, `/usr/local/bin/opencode`, `/opt/homebrew/bin/opencode`, or `PATH`)
+- [OpenCode CLI](https://opencode.ai/) *(optional — only needed when `BRIDGE_SIGNATURE_MODE=cli`)*
 
 ## Installation
+
+### Option 1: Docker (Zero Host Impact, Recommended for Containers / Cloud)
+
+The included [`Dockerfile`](Dockerfile) bundles only Python 3, Bun, and the bridge scripts inside a non-root container (`BRIDGE_STATE_DIR=/data`) — no `opencode` CLI binary required (`~0 MB` CLI overhead, `~54 MB` standby RAM).
+
+```bash
+# Run with explicit Bearer auth key
+BRIDGE_API_KEY="sk-your-secret-key" docker compose up -d --build
+
+# Or build & run directly
+docker build -t opencode-openai-bridge .
+docker run -d --name opencode-openai-bridge \
+  -p 29471:29471 \
+  -e BRIDGE_API_KEY="sk-your-secret-key" \
+  -v opencode_bridge_data:/data \
+  opencode-openai-bridge
+```
+
+If `BRIDGE_API_KEY` is omitted, an auto-generated key is persisted in `/data/api_key`.
+
+#### Free-Tier PaaS (Render / Koyeb / Railway / Fly.io)
+
+`BRIDGE_PORT` automatically falls back to the platform `PORT` environment variable. A [`render.yaml`](render.yaml) Docker blueprint is included with `plan: free`, `healthCheckPath: /health`, and auto-generated `BRIDGE_API_KEY` auth.
+
+> [!NOTE]
+> Unprivileged PaaS containers cannot run `warp-svc` locally. On shared datacenter IPs, OpenCode may hit `429 FreeUsageLimitError` unless you point `BRIDGE_UPSTREAM_PROXY` (+ optional `BRIDGE_UPSTREAM_ROTATE_URL`) to an external proxy such as `warp-rotating-proxy`.
+
+### Option 2: Native Linux (`systemd` user service)
 
 ```bash
 bash install.sh
 ```
 
-`install.sh` auto-detects `python3`, `bun`, `opencode`, and state directory paths, prompts interactively if any binary cannot be found, and injects the resolved paths into `~/.config/systemd/user/opencode-openai-bridge.service`. You can also pass explicit options:
+`install.sh` auto-detects `python3`, `bun`, optional `opencode`, and state directory paths, prompts interactively if a required binary cannot be found, and injects resolved paths into `~/.config/systemd/user/opencode-openai-bridge.service`. You can also pass explicit options:
 
 ```bash
 bash install.sh \
   --dest ~/.local/share/opencode-bridge \
   --python /usr/bin/python3 \
   --bun ~/.bun/bin/bun \
-  --opencode ~/.opencode/bin/opencode \
+  --signature-mode auto \
   --host 0.0.0.0 \
   --port 29471 \
   --upstream-port 29472 \
@@ -90,18 +118,21 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 | Variable | Default | Description |
 |---|---|---|
 | `BRIDGE_HOST` | `0.0.0.0` | Listen address |
-| `BRIDGE_PORT` | `29471` | Public bridge port |
+| `BRIDGE_PORT` | `PORT` or `29471` | Public bridge port (falls back to PaaS `PORT` env var) |
 | `UPSTREAM_PORT` | `29472` | Local Bun forwarder port |
 | `BRIDGE_STATE_DIR` | `~/.local/share/opencode-bridge` | State & `api_key` directory |
 | `BUN_BIN` | *(auto-detected)* | Override path to `bun` executable |
-| `OPENCODE_BIN` | *(auto-detected)* | Override path to `opencode` executable |
+| `OPENCODE_BIN` | *(optional / auto-detected)* | Optional path to `opencode` executable (used when `BRIDGE_SIGNATURE_MODE=cli`) |
+| `BRIDGE_SIGNATURE_MODE` | `auto` | `auto` / `github` (track `anomalyco/opencode` + bundled fallback), `cli`, or `static` |
+| `OPENCODE_GITHUB_REPO` | `anomalyco/opencode` | Upstream GitHub repository tracked for signature updates |
+| `OPENCODE_UPDATE_URL` | `https://opencode.ai/update/api/latest/cli/npm` | Upstream release version feed |
 | `BRIDGE_API_KEY` | *(auto-generated)* | Override static Bearer key |
 | `BRIDGE_UPSTREAM_PROXY` | *(empty / direct)* | Optional HTTP/HTTPS proxy URL for Bun `fetch()` |
 | `BRIDGE_UPSTREAM_ROTATE_URL` | *(empty / disabled)* | Optional `POST` webhook URL triggered on `429` before retrying (e.g. `http://127.0.0.1:40001/_rotate`) |
 | `BRIDGE_UPSTREAM_ROTATE_TOKEN` | *(empty)* | Optional Bearer token sent to `BRIDGE_UPSTREAM_ROTATE_URL` |
 | `BRIDGE_MODELS_TTL` | `300` | Live `/v1/models` catalog refresh interval (seconds) |
-| `BRIDGE_SIGNATURE_TTL` | `86400` | OpenCode signature refresh interval (seconds) |
-| `BRIDGE_SIGNATURE_CHECK_INTERVAL` | `3600` | Periodic `opencode --version` / format check interval (`0` disables) |
+| `BRIDGE_SIGNATURE_TTL` | `86400` | OpenCode signature cache TTL (seconds) |
+| `BRIDGE_SIGNATURE_CHECK_INTERVAL` | `86400` | Periodic upstream version/format check interval (`0` disables) |
 | `BRIDGE_REQUEST_TIMEOUT` | `240` | Upstream request timeout (seconds) |
 
 ## Testing
