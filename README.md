@@ -20,7 +20,7 @@ opencode.ai/inference/openai/v1/chat/completions
 ### Why this stack?
 - **Python 3 stdlib** (`opencode_openai_bridge.py`) keeps zero external `pip` dependencies and manages auth, OpenAI protocol translation (`tools`, `tool_calls`, `reasoning_content`), and 8s SSE `: keepalive\n\n` heartbeats (prevents Cloudflare `524` idle timeouts).
 - **Bun** (`bun_upstream.js`) provides Bun's BoringSSL TLS/HTTP2 fingerprint required by `opencode.ai/inference/openai/v1/chat/completions` and streams SSE chunks live.
-- **Signature capture** (`bridge_signature.py`) runs `opencode --standalone` against an ephemeral localhost listener once every 24h to cache the current User-Agent, system prompt, base tools, and active free models.
+- **Signature & format monitor** (`bridge_signature.py`) runs `opencode --standalone` against an ephemeral localhost listener at startup, on `BRIDGE_SIGNATURE_TTL`, or whenever `opencode --version` changes (checked every `BRIDGE_SIGNATURE_CHECK_INTERVAL` seconds). It auto-adapts `User-Agent`, static `x-*` headers, system prompt, and base tools, and logs `WARNING:` if OpenCode's request path or JSON call format drifts.
 
 ## Prerequisites
 
@@ -72,6 +72,7 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 | `BRIDGE_UPSTREAM_PROXY` | *(empty / direct)* | Optional HTTP/HTTPS proxy URL for Bun `fetch()` |
 | `BRIDGE_MODELS_TTL` | `300` | Live `/v1/models` catalog refresh interval (seconds) |
 | `BRIDGE_SIGNATURE_TTL` | `86400` | OpenCode signature refresh interval (seconds) |
+| `BRIDGE_SIGNATURE_CHECK_INTERVAL` | `3600` | Periodic `opencode --version` / format check interval (`0` disables) |
 | `BRIDGE_REQUEST_TIMEOUT` | `240` | Upstream request timeout (seconds) |
 
 ## Testing

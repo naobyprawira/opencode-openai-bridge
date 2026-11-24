@@ -5,6 +5,12 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-24
+
+### Added
+- Periodic OpenCode CLI version and call-format monitor (`BRIDGE_SIGNATURE_CHECK_INTERVAL`, default `3600`s) that re-captures immediately when `opencode --version` changes.
+- Automatic adaptation for `User-Agent`, static `x-*` headers, system prompt, and base tools, plus explicit `WARNING:` logs when OpenCode's endpoint path, headers, body keys, system message shape, or tool schema drift.
+
 ## [0.2.1] - 2026-11-24
 
 ### Changed
