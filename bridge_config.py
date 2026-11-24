@@ -24,10 +24,19 @@ def resolve_binary(env_var: str, binary_name: str, extra_candidates: list[str]) 
     return os.path.expanduser(extra_candidates[0]) if extra_candidates else binary_name
 
 
+def resolve_port(env_vars: tuple[str, ...], default: int) -> int:
+    """Resolve port from the first non-empty env var in priority order."""
+    for name in env_vars:
+        raw = os.environ.get(name, "").strip()
+        if raw:
+            return int(raw)
+    return default
+
+
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "0.0.0.0")
-BRIDGE_PORT = int(os.environ.get("BRIDGE_PORT", "29471"))
+BRIDGE_PORT = resolve_port(("BRIDGE_PORT", "PORT"), 29471)
 UPSTREAM_HOST = "127.0.0.1"
-UPSTREAM_PORT = int(os.environ.get("UPSTREAM_PORT", "29472"))
+UPSTREAM_PORT = resolve_port(("UPSTREAM_PORT",), 29472)
 
 STATE_DIR = os.path.expanduser(
     os.environ.get("BRIDGE_STATE_DIR", "~/.local/share/opencode-bridge")
@@ -70,6 +79,16 @@ MODELS_URL = os.environ.get(
     "OPENCODE_MODELS_URL",
     "https://opencode.ai/inference/openai/v1/models",
 )
+OPENCODE_UPDATE_URL = os.environ.get(
+    "OPENCODE_UPDATE_URL",
+    "https://opencode.ai/update/api/latest/cli/npm",
+).strip()
+OPENCODE_GITHUB_REPO = os.environ.get(
+    "OPENCODE_GITHUB_REPO",
+    "anomalyco/opencode",
+).strip()
+SIGNATURE_MODE = os.environ.get("BRIDGE_SIGNATURE_MODE", "auto").strip().lower()
+
 UPSTREAM_PROXY_URL = os.environ.get("BRIDGE_UPSTREAM_PROXY", "").strip()
 UPSTREAM_ROTATE_URL = os.environ.get("BRIDGE_UPSTREAM_ROTATE_URL", "").strip()
 UPSTREAM_ROTATE_TOKEN = os.environ.get("BRIDGE_UPSTREAM_ROTATE_TOKEN", "").strip()
@@ -77,7 +96,7 @@ UPSTREAM_ROTATE_TOKEN = os.environ.get("BRIDGE_UPSTREAM_ROTATE_TOKEN", "").strip
 REQUEST_TIMEOUT_SEC = float(os.environ.get("BRIDGE_REQUEST_TIMEOUT", "240"))
 SIGNATURE_TTL_SEC = float(os.environ.get("BRIDGE_SIGNATURE_TTL", "86400"))
 SIGNATURE_CHECK_INTERVAL_SEC = float(
-    os.environ.get("BRIDGE_SIGNATURE_CHECK_INTERVAL", "3600")
+    os.environ.get("BRIDGE_SIGNATURE_CHECK_INTERVAL", "86400")
 )
 MODELS_TTL_SEC = float(os.environ.get("BRIDGE_MODELS_TTL", "300"))
 

@@ -39,6 +39,18 @@ class TestConfig(unittest.TestCase):
                 "/opt/bin/bun",
             )
 
+    def test_resolve_port_prefers_bridge_port_then_paas_port_then_default(self) -> None:
+        with patch.dict(os.environ, {"BRIDGE_PORT": "9000", "PORT": "10000"}, clear=True):
+            self.assertEqual(cfg.resolve_port(("BRIDGE_PORT", "PORT"), 29471), 9000)
+        with patch.dict(os.environ, {"PORT": "10000"}, clear=True):
+            self.assertEqual(cfg.resolve_port(("BRIDGE_PORT", "PORT"), 29471), 10000)
+        with patch.dict(os.environ, {"BRIDGE_PORT": "", "PORT": ""}, clear=True):
+            self.assertEqual(cfg.resolve_port(("BRIDGE_PORT", "PORT"), 29471), 29471)
+
+    def test_default_signature_check_interval_is_24h(self) -> None:
+        if not os.environ.get("BRIDGE_SIGNATURE_CHECK_INTERVAL"):
+            self.assertEqual(cfg.SIGNATURE_CHECK_INTERVAL_SEC, 86400.0)
+
 
 if __name__ == "__main__":
     unittest.main()
