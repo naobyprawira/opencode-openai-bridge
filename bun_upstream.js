@@ -30,8 +30,12 @@ const server = Bun.serve({
     }
 
     const targetUrl = String(spec.url || "https://opencode.ai/inference/openai/v1/chat/completions");
+    const method = String(spec.method || "POST").toUpperCase();
     const headers = spec.headers || {};
-    const body = typeof spec.body === "string" ? spec.body : JSON.stringify(spec.body || {});
+    const hasBody = method !== "GET" && method !== "HEAD";
+    const body = hasBody
+      ? (typeof spec.body === "string" ? spec.body : JSON.stringify(spec.body || {}))
+      : undefined;
     const proxyUrl = spec.proxyUrl ? String(spec.proxyUrl) : undefined;
     const timeoutMs = Number(spec.timeoutMs || DEFAULT_TIMEOUT_MS);
 
@@ -43,11 +47,13 @@ const server = Bun.serve({
 
     try {
       const fetchOpts = {
-        method: "POST",
+        method,
         headers,
-        body,
         signal: ac.signal,
       };
+      if (hasBody) {
+        fetchOpts.body = body;
+      }
       if (proxyUrl) {
         fetchOpts.proxy = proxyUrl;
       }
