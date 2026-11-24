@@ -136,6 +136,42 @@ class TestUpstream(unittest.TestCase):
 
         self.assertEqual([m["id"] for m in models], ["big-pickle"])
 
+    def test_open_inference_calls_rotate_webhook_on_429_and_retries(self) -> None:
+        conn_429 = MagicMock(spec=http.client.HTTPConnection)
+        resp_429 = MagicMock(spec=http.client.HTTPResponse)
+        resp_429.status = 429
+        resp_429.read.return_value = b'{"error":{"message":"Rate limit"}}'
+
+        conn_ok = MagicMock(spec=http.client.HTTPConnection)
+        resp_ok = MagicMock(spec=http.client.HTTPResponse)
+        resp_ok.status = 200
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+        with patch.object(upstream, "UPSTREAM_ROTATE_URL", "http://127.0.0.1:40001/_rotate"), patch.object(
+            upstream.SIGNATURE, "get", return_value=fake_sig
+        ), patch.object(
+            upstream.UPSTREAM,
+            "open_upstream_stream",
+            side_effect=[(conn_429, resp_429), (conn_ok, resp_ok)],
+        ) as mock_open, patch.object(
+            upstream, "_trigger_rotate_webhook", return_value=True
+        ) as mock_rot:
+            st, conn, resp, body = upstream.open_inference_with_retry(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "deepseek-v4.1-flash-free",
+            )
+
+        mock_rot.assert_called_once_with(force=False)
+        self.assertEqual(mock_open.call_count, 2)
+        self.assertEqual(st, 200)
+        self.assertIs(conn, conn_ok)
+        self.assertIs(resp, resp_ok)
+        self.assertIsNone(body)
+
 
 if __name__ == "__main__":
     unittest.main()
