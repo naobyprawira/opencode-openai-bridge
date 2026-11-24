@@ -16,7 +16,10 @@ from typing import Any
 from bridge_config import (
     BUN_BIN,
     BUN_UPSTREAM_JS,
+    DEFAULT_MODELS,
     INFERENCE_URL,
+    MODELS_TTL_SEC,
+    MODELS_URL,
     REQUEST_TIMEOUT_SEC,
     STATE_DIR,
     UPSTREAM_HOST,
@@ -26,6 +29,7 @@ from bridge_config import (
 )
 from bridge_protocol import (
     build_upstream_payload,
+    extract_free_chat_models,
     make_opencode_headers,
 )
 from bridge_signature import SIGNATURE
@@ -119,6 +123,7 @@ class UpstreamManager:
         self.ensure_running()
         spec: dict[str, Any] = {
             "url": INFERENCE_URL,
+            "method": "POST",
             "headers": headers,
             "body": payload,
             "timeoutMs": int(timeout * 1000),
@@ -136,8 +141,112 @@ class UpstreamManager:
         resp = conn.getresponse()
         return conn, resp
 
+    def fetch_json(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        timeout: float = 15.0,
+        proxy_url: str = UPSTREAM_PROXY_URL,
+    ) -> tuple[int, Any]:
+        self.ensure_running()
+        spec: dict[str, Any] = {
+            "url": url,
+            "method": method,
+            "headers": headers or {},
+            "timeoutMs": int(timeout * 1000),
+        }
+        if proxy_url:
+            spec["proxyUrl"] = proxy_url
+        body = json.dumps(spec).encode("utf-8")
+        conn = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=timeout)
+        try:
+            conn.request(
+                "POST",
+                "/forward",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", errors="replace")
+            return resp.status, json.loads(raw) if raw else {}
+        finally:
+            conn.close()
+
 
 UPSTREAM = UpstreamManager()
+
+
+class ModelCatalogManager:
+    """Syncs active free chat models from OpenCode's live /v1/models endpoint."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: list[dict[str, Any]] = []
+        self._fetched_at: float = 0.0
+
+    def _fallback_items(self) -> list[dict[str, Any]]:
+        try:
+            sig = SIGNATURE.get()
+            models = sig.get("models") or DEFAULT_MODELS
+        except Exception:
+            models = DEFAULT_MODELS
+        now = int(time.time())
+        return [
+            {
+                "id": mid,
+                "object": "model",
+                "created": now,
+                "owned_by": "opencode",
+            }
+            for mid in models
+        ]
+
+    def get(self, force: bool = False) -> list[dict[str, Any]]:
+        with self._lock:
+            now = time.monotonic()
+            if (
+                not force
+                and self._items
+                and (now - self._fetched_at) < MODELS_TTL_SEC
+            ):
+                return list(self._items)
+
+            try:
+                ua = "opencode/latest"
+                try:
+                    ua = SIGNATURE.get().get("user_agent") or ua
+                except Exception:
+                    pass
+                st, raw_payload = UPSTREAM.fetch_json(
+                    MODELS_URL,
+                    method="GET",
+                    headers={
+                        "Authorization": "Bearer public",
+                        "Accept": "application/json",
+                        "User-Agent": ua,
+                    },
+                    timeout=15.0,
+                )
+                if st == 200 and isinstance(raw_payload, dict):
+                    items = extract_free_chat_models(raw_payload)
+                    if items:
+                        old_ids = [m["id"] for m in self._items]
+                        new_ids = [m["id"] for m in items]
+                        if new_ids != old_ids:
+                            log(f"Synced {len(items)} live free models from OpenCode")
+                        self._items = items
+                        self._fetched_at = time.monotonic()
+                        return list(self._items)
+            except Exception as exc:
+                log(f"Warning: failed to sync live models catalog: {exc}")
+
+            if self._items:
+                return list(self._items)
+            return self._fallback_items()
+
+
+MODELS_CATALOG = ModelCatalogManager()
 
 
 def open_inference_with_retry(

@@ -44,6 +44,48 @@ def normalize_model_id(raw_model: str | None) -> str:
     return m or "big-pickle"
 
 
+def _is_free_chat_model(entry: dict[str, Any]) -> bool:
+    mid = entry.get("id")
+    if not isinstance(mid, str) or not mid:
+        return False
+    mtype = entry.get("type")
+    if mtype and mtype != "chat":
+        return False
+    cost = entry.get("cost")
+    if not isinstance(cost, dict):
+        return mid.endswith("-free")
+    txt = cost.get("text")
+    if not isinstance(txt, dict):
+        return mid.endswith("-free")
+    inp = txt.get("input") if isinstance(txt.get("input"), dict) else {}
+    out = txt.get("output") if isinstance(txt.get("output"), dict) else {}
+    return inp.get("price") == 0 and out.get("price") == 0
+
+
+def extract_free_chat_models(raw_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Filter live OpenCode /v1/models catalog to active free chat models."""
+    items = raw_payload.get("data")
+    if not isinstance(items, list):
+        return []
+
+    now = int(time.time())
+    out: list[dict[str, Any]] = []
+    for m in items:
+        if not isinstance(m, dict) or not _is_free_chat_model(m):
+            continue
+        item: dict[str, Any] = {
+            "id": m["id"],
+            "object": "model",
+            "created": m.get("created") if isinstance(m.get("created"), int) else now,
+            "owned_by": m.get("owned_by") or "opencode",
+        }
+        for extra in ("name", "description", "modalities", "capabilities", "limit"):
+            if m.get(extra) is not None:
+                item[extra] = m[extra]
+        out.append(item)
+    return out
+
+
 def make_opencode_session_id() -> str:
     """Generate a descending OpenCode session ID (48-bit ~ms + 14 base62)."""
     global _SESSION_LAST_MS, _SESSION_SEQ

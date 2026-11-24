@@ -18,10 +18,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from urllib.parse import parse_qs
+
 from bridge_config import (
     BRIDGE_HOST,
     BRIDGE_PORT,
-    DEFAULT_MODELS,
     UPSTREAM_PORT,
     UPSTREAM_PROXY_URL,
     load_or_create_api_key,
@@ -34,7 +35,7 @@ from bridge_protocol import (
     rewrite_sse_line,
 )
 from bridge_signature import SIGNATURE
-from bridge_upstream import UPSTREAM, open_inference_with_retry
+from bridge_upstream import MODELS_CATALOG, UPSTREAM, open_inference_with_retry
 
 
 API_KEY = load_or_create_api_key()
@@ -91,7 +92,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
-        path = self.path.split("?", 1)[0]
+        path, _, query = self.path.partition("?")
         if path == "/health":
             self._send_json(
                 200,
@@ -109,21 +110,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if not self._authorized():
                 self._send_openai_error(401, "Invalid API key", "authentication_error")
                 return
-            try:
-                sig = SIGNATURE.get()
-                models = sig.get("models") or DEFAULT_MODELS
-            except Exception:
-                models = DEFAULT_MODELS
-            now = int(time.time())
-            items = [
-                {
-                    "id": mid,
-                    "object": "model",
-                    "created": now,
-                    "owned_by": "opencode",
-                }
-                for mid in models
-            ]
+            qs = parse_qs(query)
+            force = qs.get("refresh", [""])[0].lower() in ("1", "true", "yes")
+            items = MODELS_CATALOG.get(force=force)
             self._send_json(200, {"object": "list", "data": items})
             return
 
