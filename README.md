@@ -43,7 +43,7 @@ sudo ufw allow in on docker0 to any port 29471 proto tcp
 ## Endpoints & Usage
 
 - `GET /health`
-- `GET /v1/models` (Bearer auth; auto-syncs live free chat models & capabilities every `BRIDGE_MODELS_TTL` seconds, supports `?refresh=1`)
+- `GET /v1/models` (Bearer auth; auto-syncs live free chat models & capabilities every `BRIDGE_MODELS_TTL` seconds, supports `?refresh=1`; omits upstream soft `limit` metadata so clients can use each model's full backend context window)
 - `POST /v1/chat/completions` (Bearer auth, supports `stream: true` and `stream: false`, `tools`, `tool_calls`, `reasoning_content`, and vision `image_url` on vision-capable models)
 
 ```bash
