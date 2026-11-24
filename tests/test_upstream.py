@@ -395,6 +395,86 @@ class TestUpstream(unittest.TestCase):
         self.assertIsNone(body)
         self.assertEqual(call_num, 2)
 
+    def test_open_inference_bounds_inflight_rot_retries_and_preserves_429(self) -> None:
+        conn_429 = MagicMock(spec=http.client.HTTPConnection)
+        resp_429 = MagicMock(spec=http.client.HTTPResponse)
+        resp_429.status = 429
+        resp_429.read.return_value = b'{"error":{"message":"Rate limit","type":"rate_limit_error"}}'
+
+        conn_502 = MagicMock(spec=http.client.HTTPConnection)
+        resp_502 = MagicMock(spec=http.client.HTTPResponse)
+        resp_502.status = 502
+        resp_502.read.return_value = b'{"error":{"message":"ECONNRESET"}}'
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+
+        def fake_open(*args: object, **kwargs: object) -> tuple[object, object]:
+            if mock_open.call_count == 1:
+                return conn_429, resp_429
+            # Simulate concurrent generation advance on every 502
+            upstream._ROTATE_GEN += 1
+            return conn_502, resp_502
+
+        with patch.object(upstream, "UPSTREAM_ROTATE_URL", "http://127.0.0.1:40001/_rotate"), patch.object(
+            upstream, "RATE_LIMIT_RETRIES", 1
+        ), patch.object(upstream, "UPSTREAM_RETRY_COUNT", 0), patch.object(
+            upstream.SIGNATURE, "get", return_value=fake_sig
+        ), patch.object(
+            upstream, "_trigger_rotate_webhook", return_value=True
+        ), patch.object(
+            upstream.UPSTREAM, "open_upstream_stream", side_effect=fake_open
+        ) as mock_open:
+            st, conn, resp, body = upstream.open_inference_with_retry(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "deepseek-v4.1-flash-free",
+            )
+
+        # 1 (initial 429) + 2 inflight_rot_retries (RATE_LIMIT_RETRIES + 1) + 1 final 502 -> capped!
+        self.assertEqual(mock_open.call_count, 4)
+        self.assertEqual(st, 429)
+        self.assertIsNone(conn)
+        self.assertIsNone(resp)
+        self.assertEqual(body["error"]["message"], "Rate limit")
+
+    def test_rotate_for_generation_waits_for_active_streams_grace(self) -> None:
+        import threading
+
+        upstream._ROTATE_GEN = 20
+        upstream._ACTIVE_STREAMS = 0
+        rot_called_at: list[float] = []
+        stream_ended_at: list[float] = []
+
+        upstream.begin_active_stream()
+
+        def release_stream() -> None:
+            import time
+
+            time.sleep(0.08)
+            stream_ended_at.append(time.monotonic())
+            upstream.end_active_stream()
+
+        def fake_rot(force: bool = False) -> bool:
+            import time
+
+            rot_called_at.append(time.monotonic())
+            return True
+
+        t = threading.Thread(target=release_stream, daemon=True)
+        t.start()
+        with patch.object(upstream, "_trigger_rotate_webhook", side_effect=fake_rot):
+            ok = upstream._rotate_for_generation(20, grace_sec=1.0)
+        t.join(timeout=1.0)
+
+        self.assertTrue(ok)
+        self.assertEqual(len(rot_called_at), 1)
+        self.assertEqual(len(stream_ended_at), 1)
+        self.assertGreaterEqual(rot_called_at[0], stream_ended_at[0])
+        self.assertEqual(upstream._ACTIVE_STREAMS, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

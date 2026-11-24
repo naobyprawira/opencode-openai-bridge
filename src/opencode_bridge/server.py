@@ -38,7 +38,13 @@ from opencode_bridge.protocol import (
     rewrite_sse_line,
 )
 from opencode_bridge.signature import SIGNATURE
-from opencode_bridge.upstream import MODELS_CATALOG, UPSTREAM, open_inference_with_retry
+from opencode_bridge.upstream import (
+    MODELS_CATALOG,
+    UPSTREAM,
+    begin_active_stream,
+    end_active_stream,
+    open_inference_with_retry,
+)
 
 
 API_KEY = load_or_create_api_key()
@@ -179,6 +185,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_openai_error(st if 400 <= st < 600 else 502, msg)
             return
 
+        begin_active_stream()
         try:
             if not stream:
                 completion = assemble_non_stream_response(resp, requested_model)
@@ -230,6 +237,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
+            end_active_stream()
             try:
                 conn.close()
             except Exception:

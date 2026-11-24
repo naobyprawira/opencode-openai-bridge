@@ -102,7 +102,13 @@ SIGNATURE_CHECK_INTERVAL_SEC = float(
 MODELS_TTL_SEC = float(os.environ.get("BRIDGE_MODELS_TTL", "300"))
 RATE_LIMIT_RETRIES = max(0, int(os.environ.get("BRIDGE_RATE_LIMIT_RETRIES", "2")))
 UPSTREAM_RETRY_COUNT = max(0, int(os.environ.get("BRIDGE_UPSTREAM_RETRIES", "2")))
-RETRY_BUDGET_SEC = max(5.0, float(os.environ.get("BRIDGE_RETRY_BUDGET_SEC", "45")))
+RETRY_BUDGET_SEC = max(5.0, float(os.environ.get("BRIDGE_RETRY_BUDGET_SEC", "35")))
+MAX_CONCURRENT_UPSTREAM = max(
+    1, int(os.environ.get("BRIDGE_MAX_CONCURRENT_UPSTREAM", "3"))
+)
+STREAM_GRACE_SEC = max(
+    0.0, float(os.environ.get("BRIDGE_ROTATE_STREAM_GRACE_SEC", "10"))
+)
 
 DEFAULT_MODELS = [
     "beam-free",

@@ -135,7 +135,9 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 | `BRIDGE_SIGNATURE_CHECK_INTERVAL` | `86400` | Periodic upstream version/format check interval (`0` disables) |
 | `BRIDGE_RATE_LIMIT_RETRIES` | `2` | Maximum upstream IP rotation retries on `429` before failing |
 | `BRIDGE_UPSTREAM_RETRIES` | `2` | Maximum retries on transient `502`/`503`/`504` or connection resets |
-| `BRIDGE_RETRY_BUDGET_SEC` | `45` | Max total seconds spent retrying/rotating before returning upstream status (prevents downstream 120s connect timeouts) |
+| `BRIDGE_RETRY_BUDGET_SEC` | `35` | Max total seconds spent retrying/rotating before returning upstream status (prevents downstream 120s connect timeouts) |
+| `BRIDGE_MAX_CONCURRENT_UPSTREAM` | `3` | Maximum simultaneous upstream connection handshakes (prevents fresh-IP `429` stampedes after rotation) |
+| `BRIDGE_ROTATE_STREAM_GRACE_SEC` | `10` | Max seconds a `429` rotation waits for active `200 OK` responses/streams to finish before disconnecting WARP |
 | `BRIDGE_REQUEST_TIMEOUT` | `240` | Upstream request timeout (seconds) |
 
 ## Testing

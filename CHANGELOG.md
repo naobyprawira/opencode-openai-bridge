@@ -5,6 +5,13 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] - 2026-11-24
+
+### Fixed
+- Added active stream/response tracking (`begin_active_stream()` / `end_active_stream()`) and `BRIDGE_ROTATE_STREAM_GRACE_SEC` (default `10s`) so `429`-triggered IP rotations briefly wait for in-flight `200 OK` thinking/streaming responses to finish instead of killing them mid-stream via `warp-cli disconnect`.
+- Added `BRIDGE_MAX_CONCURRENT_UPSTREAM` (default `3`) semaphore gating upstream request handshakes so queued callers do not stampede a newly rotated IP simultaneously and cause instant burst `429` loops.
+- Bounded `inflight_rot_retries` (`<= RATE_LIMIT_RETRIES + 1`), lowered default `BRIDGE_RETRY_BUDGET_SEC` to `35s`, and preserved `429` (`rate_limit_error`) when a request hit `429` first and later hit a transient rotation `502` near deadline.
+
 ## [0.5.4] - 2026-11-24
 
 ### Fixed

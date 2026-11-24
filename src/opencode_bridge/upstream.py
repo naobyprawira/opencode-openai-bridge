@@ -18,12 +18,14 @@ from opencode_bridge.config import (
     BUN_UPSTREAM_JS,
     DEFAULT_MODELS,
     INFERENCE_URL,
+    MAX_CONCURRENT_UPSTREAM,
     MODELS_TTL_SEC,
     MODELS_URL,
     RATE_LIMIT_RETRIES,
     REQUEST_TIMEOUT_SEC,
     RETRY_BUDGET_SEC,
     STATE_DIR,
+    STREAM_GRACE_SEC,
     UPSTREAM_HOST,
     UPSTREAM_PORT,
     UPSTREAM_PROXY_URL,
@@ -257,6 +259,36 @@ MODELS_CATALOG = ModelCatalogManager()
 
 _ROTATE_LOCK = threading.Lock()
 _ROTATE_GEN = 0
+_ACTIVE_COND = threading.Condition()
+_ACTIVE_STREAMS = 0
+_UPSTREAM_SEM = threading.Semaphore(MAX_CONCURRENT_UPSTREAM)
+
+
+def begin_active_stream() -> None:
+    global _ACTIVE_STREAMS
+    with _ACTIVE_COND:
+        _ACTIVE_STREAMS += 1
+
+
+def end_active_stream() -> None:
+    global _ACTIVE_STREAMS
+    with _ACTIVE_COND:
+        if _ACTIVE_STREAMS > 0:
+            _ACTIVE_STREAMS -= 1
+        if _ACTIVE_STREAMS == 0:
+            _ACTIVE_COND.notify_all()
+
+
+def _wait_for_active_streams(timeout: float) -> None:
+    if timeout <= 0:
+        return
+    deadline = time.monotonic() + timeout
+    with _ACTIVE_COND:
+        while _ACTIVE_STREAMS > 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            _ACTIVE_COND.wait(remaining)
 
 
 def _trigger_rotate_webhook(force: bool = False) -> bool:
@@ -292,11 +324,12 @@ def _trigger_rotate_webhook(force: bool = False) -> bool:
         return False
 
 
-def _rotate_for_generation(expected_gen: int) -> bool:
+def _rotate_for_generation(expected_gen: int, grace_sec: float = STREAM_GRACE_SEC) -> bool:
     global _ROTATE_GEN
     with _ROTATE_LOCK:
         if _ROTATE_GEN != expected_gen:
             return True
+        _wait_for_active_streams(grace_sec)
         if _trigger_rotate_webhook(force=False):
             _ROTATE_GEN += 1
             return True
@@ -317,7 +350,22 @@ def open_inference_with_retry(
     last_body: Any = {"error": {"message": "Upstream connection failed"}}
     rotations_used = 0
     transient_used = 0
+    inflight_rot_retries = 0
+    max_inflight_rot_retries = max(1, RATE_LIMIT_RETRIES + 1)
+    saw_rate_limit = False
+    rate_limit_body: Any = None
     deadline = time.monotonic() + RETRY_BUDGET_SEC
+
+    def _finish_error(st: int, body: Any) -> tuple[int, None, None, Any]:
+        if saw_rate_limit and st in (502, 503, 504):
+            return 429, None, None, rate_limit_body or {
+                "error": {
+                    "message": "Free usage limit reached; please retry shortly.",
+                    "type": "rate_limit_error",
+                    "code": "429",
+                }
+            }
+        return st, None, None, body
 
     while True:
         with _ROTATE_LOCK:
@@ -328,9 +376,10 @@ def open_inference_with_retry(
         )
         conn: http.client.HTTPConnection | None = None
         try:
-            conn, resp = UPSTREAM.open_upstream_stream(
-                headers, payload, timeout=REQUEST_TIMEOUT_SEC
-            )
+            with _UPSTREAM_SEM:
+                conn, resp = UPSTREAM.open_upstream_stream(
+                    headers, payload, timeout=REQUEST_TIMEOUT_SEC
+                )
             if resp.status == 200:
                 return 200, conn, resp, None
 
@@ -342,15 +391,22 @@ def open_inference_with_retry(
             except Exception:
                 body = {"error": {"message": raw or f"HTTP {st}"}}
             last_st, last_body = st, body
+            if is_rate_limit_error(st, body):
+                saw_rate_limit = True
+                rate_limit_body = body
 
-            if time.monotonic() >= deadline:
-                return st, None, None, body
+            remaining_budget = deadline - time.monotonic()
+            if remaining_budget <= 0:
+                return _finish_error(st, body)
 
             if (
                 is_rate_limit_error(st, body)
                 and UPSTREAM_ROTATE_URL
                 and rotations_used < RATE_LIMIT_RETRIES
-                and _rotate_for_generation(gen_before)
+                and _rotate_for_generation(
+                    gen_before,
+                    grace_sec=min(STREAM_GRACE_SEC, max(0.0, remaining_budget - 6.0)),
+                )
             ):
                 rotations_used += 1
                 continue
@@ -358,7 +414,8 @@ def open_inference_with_retry(
             if st in (502, 503, 504):
                 with _ROTATE_LOCK:
                     rotated_while_inflight = _ROTATE_GEN != gen_before
-                if rotated_while_inflight:
+                if rotated_while_inflight and inflight_rot_retries < max_inflight_rot_retries:
+                    inflight_rot_retries += 1
                     log(f"Upstream HTTP {st} during concurrent rotation; retrying on fresh IP...")
                     continue
                 if transient_used < UPSTREAM_RETRY_COUNT:
@@ -367,7 +424,7 @@ def open_inference_with_retry(
                     time.sleep(0.5)
                     continue
 
-            return st, None, None, body
+            return _finish_error(st, body)
         except TimeoutError:
             if conn is not None:
                 try:
@@ -389,15 +446,16 @@ def open_inference_with_retry(
             last_st = 502
             last_body = {"error": {"message": f"Bridge upstream error: {exc}"}}
             if time.monotonic() >= deadline:
-                return last_st, None, None, last_body
+                return _finish_error(last_st, last_body)
             with _ROTATE_LOCK:
                 rotated_while_inflight = _ROTATE_GEN != gen_before
-            if rotated_while_inflight:
+            if rotated_while_inflight and inflight_rot_retries < max_inflight_rot_retries:
+                inflight_rot_retries += 1
                 continue
             if transient_used < UPSTREAM_RETRY_COUNT:
                 transient_used += 1
                 time.sleep(0.5)
                 continue
-            return last_st, None, None, last_body
+            return _finish_error(last_st, last_body)
 
-    return last_st, None, None, last_body
+    return _finish_error(last_st, last_body)
