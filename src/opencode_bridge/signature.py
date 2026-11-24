@@ -20,7 +20,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
-from bridge_config import (
+from opencode_bridge.config import (
     DEFAULT_MODELS,
     OPENCODE_BIN,
     OPENCODE_GITHUB_REPO,
@@ -32,7 +32,7 @@ from bridge_config import (
     STATE_DIR,
     log,
 )
-from bridge_defaults import (
+from opencode_bridge.defaults import (
     DEFAULT_BASE_TOOLS,
     DEFAULT_BODY_KEYS,
     DEFAULT_HEADER_NAMES,

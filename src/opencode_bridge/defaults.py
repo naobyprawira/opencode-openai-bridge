@@ -6,7 +6,7 @@ import copy
 import time
 from typing import Any
 
-from bridge_config import DEFAULT_MODELS
+from opencode_bridge.config import DEFAULT_MODELS
 
 DEFAULT_CLI_VERSION = "opencode v2.4.1"
 DEFAULT_USER_AGENT = "opencode/latest/2.4.1/cli"

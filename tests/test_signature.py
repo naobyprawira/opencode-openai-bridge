@@ -5,8 +5,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-import bridge_protocol as proto
-import bridge_signature as sigmod
+from opencode_bridge import protocol as proto
+from opencode_bridge import signature as sigmod
 
 
 class TestSignatureMonitor(unittest.TestCase):

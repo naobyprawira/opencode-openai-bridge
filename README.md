@@ -8,19 +8,19 @@ OpenAI-compatible HTTP bridge to OpenCode's free inference models (`deepseek-v4.
 Client / 9router
    │  (HTTP/1.1 OpenAI API, port 29471)
    ▼
-opencode_openai_bridge.py   (Python 3 stdlib: auth, tool/message merge, SSE keepalive)
+opencode_bridge.server      (Python 3 stdlib: auth, tool/message merge, SSE keepalive)
    │  (localhost port 29472)
    ▼
-bun_upstream.js             (Bun.serve + fetch: native TLS/HTTP2 stack, zero-copy SSE)
+runtime/bun_upstream.js     (Bun.serve + fetch: native TLS/HTTP2 stack, zero-copy SSE)
    │  (direct HTTPS, or optional BRIDGE_UPSTREAM_PROXY)
    ▼
 opencode.ai/inference/openai/v1/chat/completions
 ```
 
 ### Why this stack?
-- **Python 3 stdlib** (`opencode_openai_bridge.py`) keeps zero external `pip` dependencies and manages auth, OpenAI protocol translation (`tools`, `tool_calls`, `reasoning_content`), and 8s SSE `: keepalive\n\n` heartbeats (prevents Cloudflare `524` idle timeouts).
-- **Bun** (`bun_upstream.js`) provides Bun's BoringSSL TLS/HTTP2 fingerprint required by `opencode.ai/inference/openai/v1/chat/completions` and streams SSE chunks live.
-- **Signature & format monitor** (`bridge_signature.py`) ships with a bundled canonical OpenCode v2 signature snapshot (`bridge_defaults.py`) and tracks upstream releases and prompt/header files from [`anomalyco/opencode`](https://github.com/anomalyco/opencode) every `BRIDGE_SIGNATURE_CHECK_INTERVAL` seconds (default `86400`s / 24h) — **requiring zero local `opencode` CLI binary**. It auto-adapts `User-Agent` and `system_prompt` and logs `WARNING:` if headers or format drift. Setting `BRIDGE_SIGNATURE_MODE=cli` (with optional `OPENCODE_BIN`) captures from a local CLI instead.
+- **Python 3 stdlib** (`src/opencode_bridge/server.py`) keeps zero external `pip` dependencies and manages auth, OpenAI protocol translation (`tools`, `tool_calls`, `reasoning_content`), and 8s SSE `: keepalive\n\n` heartbeats (prevents Cloudflare `524` idle timeouts).
+- **Bun** (`src/opencode_bridge/runtime/bun_upstream.js`) provides Bun's BoringSSL TLS/HTTP2 fingerprint required by `opencode.ai/inference/openai/v1/chat/completions` and streams SSE chunks live.
+- **Signature & format monitor** (`src/opencode_bridge/signature.py`) ships with a bundled canonical OpenCode v2 signature snapshot (`src/opencode_bridge/defaults.py`) and tracks upstream releases and prompt/header files from [`anomalyco/opencode`](https://github.com/anomalyco/opencode) every `BRIDGE_SIGNATURE_CHECK_INTERVAL` seconds (default `86400`s / 24h) — **requiring zero local `opencode` CLI binary**. It auto-adapts `User-Agent` and `system_prompt` and logs `WARNING:` if headers or format drift. Setting `BRIDGE_SIGNATURE_MODE=cli` (with optional `OPENCODE_BIN`) captures from a local CLI instead.
 
 ## Prerequisites
 
@@ -138,5 +138,5 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 ## Testing
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -v
 ```

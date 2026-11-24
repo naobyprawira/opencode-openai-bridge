@@ -21,7 +21,7 @@ from typing import Any
 
 from urllib.parse import parse_qs
 
-from bridge_config import (
+from opencode_bridge.config import (
     API_KEY_FILE,
     BRIDGE_HOST,
     BRIDGE_PORT,
@@ -31,14 +31,14 @@ from bridge_config import (
     load_or_create_api_key,
     log,
 )
-from bridge_protocol import (
+from opencode_bridge.protocol import (
     assemble_non_stream_response,
     is_rate_limit_error,
     normalize_model_id,
     rewrite_sse_line,
 )
-from bridge_signature import SIGNATURE
-from bridge_upstream import MODELS_CATALOG, UPSTREAM, open_inference_with_retry
+from opencode_bridge.signature import SIGNATURE
+from opencode_bridge.upstream import MODELS_CATALOG, UPSTREAM, open_inference_with_retry
 
 
 API_KEY = load_or_create_api_key()

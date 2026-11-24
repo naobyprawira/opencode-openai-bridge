@@ -4,9 +4,10 @@ __pycache__
 *.pyc
 .pytest_cache
 tests
-systemd
+deploy
 install.sh
 README.md
 CHANGELOG.md
 docker-compose.yml
 render.yaml
+pyproject.toml

@@ -64,7 +64,8 @@ OPENCODE_BIN = resolve_binary(
         "/home/linuxbrew/.linuxbrew/bin/opencode",
     ],
 )
-BUN_UPSTREAM_JS = os.path.join(SCRIPT_DIR, "bun_upstream.js")
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+BUN_UPSTREAM_JS = os.path.join(PACKAGE_DIR, "runtime", "bun_upstream.js")
 if not os.path.isfile(BUN_UPSTREAM_JS):
     BUN_UPSTREAM_JS = os.path.join(STATE_DIR, "bun_upstream.js")
 

@@ -7,7 +7,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-import bridge_upstream as upstream
+from opencode_bridge import upstream
 
 
 class TestUpstream(unittest.TestCase):

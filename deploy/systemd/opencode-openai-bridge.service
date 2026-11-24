@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 %h/.local/share/opencode-bridge/opencode_openai_bridge.py
+ExecStart=/usr/bin/python3 -m opencode_bridge
+Environment=PYTHONPATH=%h/.local/share/opencode-bridge/src
 Environment=BRIDGE_HOST=0.0.0.0
 Environment=BRIDGE_PORT=29471
 Environment=UPSTREAM_PORT=29472

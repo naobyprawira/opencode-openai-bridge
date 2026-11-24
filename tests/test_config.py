@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import bridge_config as cfg
+from opencode_bridge import config as cfg
 
 
 class TestConfig(unittest.TestCase):

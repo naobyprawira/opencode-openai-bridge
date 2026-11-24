@@ -2,6 +2,7 @@ FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
     BRIDGE_HOST=0.0.0.0 \
     BRIDGE_PORT=29471 \
     UPSTREAM_PORT=29472 \
@@ -23,15 +24,7 @@ RUN useradd --uid 1000 --create-home --shell /bin/bash bridge \
     && chown -R bridge:bridge /app /data
 
 WORKDIR /app
-COPY --chown=bridge:bridge \
-    bridge_config.py \
-    bridge_defaults.py \
-    bridge_protocol.py \
-    bridge_signature.py \
-    bridge_upstream.py \
-    opencode_openai_bridge.py \
-    bun_upstream.js \
-    ./
+COPY --chown=bridge:bridge src ./src
 
 USER bridge
 VOLUME ["/data"]
@@ -40,4 +33,4 @@ EXPOSE 29471
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python3 -c "import os, urllib.request; p = os.environ.get('BRIDGE_PORT') or os.environ.get('PORT') or '29471'; urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=3)"
 
-CMD ["python3", "/app/opencode_openai_bridge.py"]
+CMD ["python3", "-m", "opencode_bridge"]

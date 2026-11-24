@@ -13,7 +13,7 @@ import time
 import urllib.request
 from typing import Any
 
-from bridge_config import (
+from opencode_bridge.config import (
     BUN_BIN,
     BUN_UPSTREAM_JS,
     DEFAULT_MODELS,
@@ -29,13 +29,13 @@ from bridge_config import (
     UPSTREAM_ROTATE_URL,
     log,
 )
-from bridge_protocol import (
+from opencode_bridge.protocol import (
     build_upstream_payload,
     extract_free_chat_models,
     is_rate_limit_error,
     make_opencode_headers,
 )
-from bridge_signature import SIGNATURE
+from opencode_bridge.signature import SIGNATURE
 
 
 class UpstreamManager:

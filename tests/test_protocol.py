@@ -7,7 +7,7 @@ import json
 import re
 import unittest
 
-import bridge_protocol as proto
+from opencode_bridge import protocol as proto
 
 
 class FakeSSEResponse:

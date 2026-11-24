@@ -117,18 +117,30 @@ else
     "/usr/local/bin/opencode" "/usr/bin/opencode" "/opt/homebrew/bin/opencode" || true)"
 fi
 
-mkdir -p "$DEST" "$UNIT_DIR"
+mkdir -p "$DEST/src/opencode_bridge/runtime" "$UNIT_DIR"
+
+rm -f \
+  "$DEST/bridge_config.py" \
+  "$DEST/bridge_defaults.py" \
+  "$DEST/bridge_protocol.py" \
+  "$DEST/bridge_signature.py" \
+  "$DEST/bridge_upstream.py" \
+  "$DEST/opencode_openai_bridge.py" \
+  "$DEST/bun_upstream.js"
 
 for f in \
-  bridge_config.py \
-  bridge_defaults.py \
-  bridge_protocol.py \
-  bridge_signature.py \
-  bridge_upstream.py \
-  opencode_openai_bridge.py \
-  bun_upstream.js; do
-  install -m 755 "$REPO_DIR/$f" "$DEST/$f"
+  __init__.py \
+  __main__.py \
+  config.py \
+  defaults.py \
+  protocol.py \
+  server.py \
+  signature.py \
+  upstream.py; do
+  install -m 644 "$REPO_DIR/src/opencode_bridge/$f" "$DEST/src/opencode_bridge/$f"
 done
+install -m 755 "$REPO_DIR/src/opencode_bridge/runtime/bun_upstream.js" \
+  "$DEST/src/opencode_bridge/runtime/bun_upstream.js"
 
 {
   cat <<EOF
@@ -139,7 +151,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$PYTHON_BIN $DEST/opencode_openai_bridge.py
+ExecStart=$PYTHON_BIN -m opencode_bridge
+Environment=PYTHONPATH=$DEST/src
 Environment=BRIDGE_HOST=$BRIDGE_HOST
 Environment=BRIDGE_PORT=$BRIDGE_PORT
 Environment=UPSTREAM_PORT=$UPSTREAM_PORT
