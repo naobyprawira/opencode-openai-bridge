@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+
+# Bun / Node
+node_modules/
+
+# Environment & secrets
+.env
+.env.*
+*.pem
+*.key
+api_key
+
+# Runtime state
+opencode_signature.json
+workdir/
+xdg/
+*.log
+
+# OS & editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
