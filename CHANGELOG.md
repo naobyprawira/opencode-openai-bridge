@@ -5,6 +5,12 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-24
+
+### Added
+- Live `/v1/models` catalog auto-sync from OpenCode's upstream models endpoint every 5 minutes (`BRIDGE_MODELS_TTL`, configurable via `OPENCODE_MODELS_URL`, plus `?refresh=1` on-demand refresh) with full `modalities`, `capabilities`, and `limit` metadata.
+- Configurable HTTP method support (`GET`/`HEAD`/`POST`) in `bun_upstream.js` and `UpstreamManager.fetch_json`.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added

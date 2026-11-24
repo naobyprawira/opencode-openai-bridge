@@ -43,8 +43,8 @@ sudo ufw allow in on docker0 to any port 29471 proto tcp
 ## Endpoints & Usage
 
 - `GET /health`
-- `GET /v1/models` (Bearer auth)
-- `POST /v1/chat/completions` (Bearer auth, supports `stream: true` and `stream: false`, `tools`, `tool_calls`, `reasoning_content`)
+- `GET /v1/models` (Bearer auth; auto-syncs live free chat models & capabilities every `BRIDGE_MODELS_TTL` seconds, supports `?refresh=1`)
+- `POST /v1/chat/completions` (Bearer auth, supports `stream: true` and `stream: false`, `tools`, `tool_calls`, `reasoning_content`, and vision `image_url` on vision-capable models)
 
 ```bash
 KEY=$(cat ~/.local/share/opencode-bridge/api_key)
@@ -70,6 +70,8 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 | `BRIDGE_STATE_DIR` | `~/.local/share/opencode-bridge` | State & `api_key` directory |
 | `BRIDGE_API_KEY` | *(auto-generated)* | Override static Bearer key |
 | `BRIDGE_UPSTREAM_PROXY` | *(empty / direct)* | Optional HTTP/HTTPS proxy URL for Bun `fetch()` |
+| `BRIDGE_MODELS_TTL` | `300` | Live `/v1/models` catalog refresh interval (seconds) |
+| `BRIDGE_SIGNATURE_TTL` | `86400` | OpenCode signature refresh interval (seconds) |
 | `BRIDGE_REQUEST_TIMEOUT` | `240` | Upstream request timeout (seconds) |
 
 ## Testing
