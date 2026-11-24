@@ -1,0 +1,23 @@
+services:
+  opencode-openai-bridge:
+    build: .
+    container_name: opencode-openai-bridge
+    restart: unless-stopped
+    ports:
+      - "${BRIDGE_PORT:-29471}:${BRIDGE_PORT:-29471}"
+    environment:
+      BRIDGE_HOST: "0.0.0.0"
+      BRIDGE_PORT: "${BRIDGE_PORT:-29471}"
+      UPSTREAM_PORT: "${UPSTREAM_PORT:-29472}"
+      BRIDGE_STATE_DIR: "/data"
+      BRIDGE_API_KEY: "${BRIDGE_API_KEY:-}"
+      BRIDGE_SIGNATURE_MODE: "${BRIDGE_SIGNATURE_MODE:-auto}"
+      BRIDGE_SIGNATURE_CHECK_INTERVAL: "${BRIDGE_SIGNATURE_CHECK_INTERVAL:-86400}"
+      BRIDGE_UPSTREAM_PROXY: "${BRIDGE_UPSTREAM_PROXY:-}"
+      BRIDGE_UPSTREAM_ROTATE_URL: "${BRIDGE_UPSTREAM_ROTATE_URL:-}"
+      BRIDGE_UPSTREAM_ROTATE_TOKEN: "${BRIDGE_UPSTREAM_ROTATE_TOKEN:-}"
+    volumes:
+      - bridge_data:/data
+
+volumes:
+  bridge_data:
