@@ -40,6 +40,15 @@ To allow Docker containers (e.g. `9router` on `docker0`) to reach port `29471` w
 sudo ufw allow in on docker0 to any port 29471 proto tcp
 ```
 
+### Recommended Pairing: `warp-rotating-proxy` (Anti-`429` Egress)
+
+While `opencode-openai-bridge` works standalone over direct HTTPS, OpenCode enforces per-IP free usage rate limits (`429 FreeUsageLimitError`). **It works best when combined with [`warp-rotating-proxy`](https://github.com/naobyprawira/warp-rotating-proxy)** so rate-limited requests automatically rotate Cloudflare WARP egress and retry:
+
+```ini
+Environment=BRIDGE_UPSTREAM_PROXY=http://127.0.0.1:40001
+Environment=BRIDGE_UPSTREAM_ROTATE_URL=http://127.0.0.1:40001/_rotate
+```
+
 ## Endpoints & Usage
 
 - `GET /health`
@@ -70,6 +79,8 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 | `BRIDGE_STATE_DIR` | `~/.local/share/opencode-bridge` | State & `api_key` directory |
 | `BRIDGE_API_KEY` | *(auto-generated)* | Override static Bearer key |
 | `BRIDGE_UPSTREAM_PROXY` | *(empty / direct)* | Optional HTTP/HTTPS proxy URL for Bun `fetch()` |
+| `BRIDGE_UPSTREAM_ROTATE_URL` | *(empty / disabled)* | Optional `POST` webhook URL triggered on `429` before retrying (e.g. `http://127.0.0.1:40001/_rotate`) |
+| `BRIDGE_UPSTREAM_ROTATE_TOKEN` | *(empty)* | Optional Bearer token sent to `BRIDGE_UPSTREAM_ROTATE_URL` |
 | `BRIDGE_MODELS_TTL` | `300` | Live `/v1/models` catalog refresh interval (seconds) |
 | `BRIDGE_SIGNATURE_TTL` | `86400` | OpenCode signature refresh interval (seconds) |
 | `BRIDGE_SIGNATURE_CHECK_INTERVAL` | `3600` | Periodic `opencode --version` / format check interval (`0` disables) |

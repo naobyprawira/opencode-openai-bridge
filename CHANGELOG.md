@@ -5,6 +5,12 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-24
+
+### Added
+- Generic rate-limit rotation webhook support (`BRIDGE_UPSTREAM_ROTATE_URL`, optional `BRIDGE_UPSTREAM_ROTATE_TOKEN`) to trigger external proxy rotation on `429` before retrying, plus `rotate_webhook_configured` status on `/health`.
+- Documented recommended pairing with [`warp-rotating-proxy`](https://github.com/naobyprawira/warp-rotating-proxy) in `README.md`.
+
 ## [0.3.0] - 2026-11-24
 
 ### Added
