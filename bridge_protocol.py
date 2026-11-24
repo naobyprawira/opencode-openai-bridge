@@ -79,7 +79,7 @@ def extract_free_chat_models(raw_payload: dict[str, Any]) -> list[dict[str, Any]
             "created": m.get("created") if isinstance(m.get("created"), int) else now,
             "owned_by": m.get("owned_by") or "opencode",
         }
-        for extra in ("name", "description", "modalities", "capabilities", "limit"):
+        for extra in ("name", "description", "modalities", "capabilities"):
             if m.get(extra) is not None:
                 item[extra] = m[extra]
         out.append(item)

@@ -110,6 +110,7 @@ class TestProtocol(unittest.TestCase):
                     "owned_by": "opencode",
                     "modalities": {"input": ["text", "image/png"], "output": ["text"]},
                     "capabilities": {"tools": {"supported": True}, "reasoning": {"supported": True}},
+                    "limit": {"context": 200000, "output": 65536},
                     "cost": {"text": {"input": {"price": 0}, "output": {"price": 0}}},
                 },
                 {
@@ -128,6 +129,7 @@ class TestProtocol(unittest.TestCase):
         self.assertEqual([m["id"] for m in models], ["deepseek-v4.1-flash-free"])
         self.assertEqual(models[0]["modalities"]["input"], ["text", "image/png"])
         self.assertTrue(models[0]["capabilities"]["tools"]["supported"])
+        self.assertNotIn("limit", models[0])
 
 
 if __name__ == "__main__":
