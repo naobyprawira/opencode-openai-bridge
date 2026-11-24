@@ -4,8 +4,24 @@ from __future__ import annotations
 
 import os
 import secrets
+import shutil
 import sys
 import time
+
+
+def resolve_binary(env_var: str, binary_name: str, extra_candidates: list[str]) -> str:
+    """Resolve binary path from env override, common install locations, or PATH."""
+    override = os.environ.get(env_var, "").strip()
+    if override:
+        return os.path.expanduser(override)
+    for raw in extra_candidates:
+        cand = os.path.expanduser(raw)
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    found = shutil.which(binary_name)
+    if found:
+        return found
+    return os.path.expanduser(extra_candidates[0]) if extra_candidates else binary_name
 
 
 BRIDGE_HOST = os.environ.get("BRIDGE_HOST", "0.0.0.0")
@@ -17,9 +33,27 @@ STATE_DIR = os.path.expanduser(
     os.environ.get("BRIDGE_STATE_DIR", "~/.local/share/opencode-bridge")
 )
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-BUN_BIN = os.path.expanduser(os.environ.get("BUN_BIN", "~/.bun/bin/bun"))
-OPENCODE_BIN = os.path.expanduser(
-    os.environ.get("OPENCODE_BIN", "~/.opencode/bin/opencode")
+BUN_BIN = resolve_binary(
+    "BUN_BIN",
+    "bun",
+    [
+        "~/.bun/bin/bun",
+        "/usr/local/bin/bun",
+        "/usr/bin/bun",
+        "/opt/homebrew/bin/bun",
+        "/home/linuxbrew/.linuxbrew/bin/bun",
+    ],
+)
+OPENCODE_BIN = resolve_binary(
+    "OPENCODE_BIN",
+    "opencode",
+    [
+        "~/.opencode/bin/opencode",
+        "/usr/local/bin/opencode",
+        "/usr/bin/opencode",
+        "/opt/homebrew/bin/opencode",
+        "/home/linuxbrew/.linuxbrew/bin/opencode",
+    ],
 )
 BUN_UPSTREAM_JS = os.path.join(SCRIPT_DIR, "bun_upstream.js")
 if not os.path.isfile(BUN_UPSTREAM_JS):
