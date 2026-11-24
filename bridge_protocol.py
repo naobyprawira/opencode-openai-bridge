@@ -102,13 +102,15 @@ def make_opencode_session_id() -> str:
     return f"ses_{hex12}{rand14}"
 
 
-def make_opencode_headers(user_agent: str) -> dict[str, str]:
+def make_opencode_headers(
+    user_agent: str, static_headers: dict[str, str] | None = None
+) -> dict[str, str]:
     trace_id = secrets.token_hex(16)
     span_id = secrets.token_hex(8)
     parent_id = secrets.token_hex(8)
     sid = make_opencode_session_id()
     proj = secrets.token_hex(20)
-    return {
+    headers = {
         "Authorization": "Bearer public",
         "Content-Type": "application/json",
         "User-Agent": user_agent,
@@ -122,6 +124,11 @@ def make_opencode_headers(user_agent: str) -> dict[str, str]:
         "x-session-affinity": sid,
         "x-session-id": sid,
     }
+    if isinstance(static_headers, dict):
+        for k, v in static_headers.items():
+            if isinstance(k, str) and isinstance(v, str) and k and v:
+                headers[k] = v
+    return headers
 
 
 def normalize_messages(

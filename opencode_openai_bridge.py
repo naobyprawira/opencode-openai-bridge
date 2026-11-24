@@ -237,6 +237,7 @@ class ReusableThreadingHTTPServer(ThreadingHTTPServer):
 
 def main() -> None:
     SIGNATURE.get()
+    SIGNATURE.start_periodic_check()
     UPSTREAM.ensure_running()
     server = ReusableThreadingHTTPServer((BRIDGE_HOST, BRIDGE_PORT), BridgeHandler)
 
@@ -251,6 +252,7 @@ def main() -> None:
     try:
         server.serve_forever()
     finally:
+        SIGNATURE.stop_periodic_check()
         UPSTREAM.stop()
         server.server_close()
 

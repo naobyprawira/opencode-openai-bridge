@@ -40,6 +40,9 @@ UPSTREAM_PROXY_URL = os.environ.get("BRIDGE_UPSTREAM_PROXY", "").strip()
 
 REQUEST_TIMEOUT_SEC = float(os.environ.get("BRIDGE_REQUEST_TIMEOUT", "240"))
 SIGNATURE_TTL_SEC = float(os.environ.get("BRIDGE_SIGNATURE_TTL", "86400"))
+SIGNATURE_CHECK_INTERVAL_SEC = float(
+    os.environ.get("BRIDGE_SIGNATURE_CHECK_INTERVAL", "3600")
+)
 MODELS_TTL_SEC = float(os.environ.get("BRIDGE_MODELS_TTL", "300"))
 
 DEFAULT_MODELS = [

@@ -263,7 +263,9 @@ def open_inference_with_retry(
     last_body: Any = {"error": {"message": "Upstream connection failed"}}
 
     for attempt in range(3):
-        headers = make_opencode_headers(sig["user_agent"])
+        headers = make_opencode_headers(
+            sig["user_agent"], sig.get("static_headers")
+        )
         conn: http.client.HTTPConnection | None = None
         try:
             conn, resp = UPSTREAM.open_upstream_stream(
