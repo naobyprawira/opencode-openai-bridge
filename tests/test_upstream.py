@@ -172,6 +172,104 @@ class TestUpstream(unittest.TestCase):
         self.assertIs(resp, resp_ok)
         self.assertIsNone(body)
 
+    def test_trigger_rotate_webhook_escalates_on_cooldown(self) -> None:
+        calls: list[str] = []
+
+        class FakeResp:
+            def __init__(self, status: int, body: bytes) -> None:
+                self.status = status
+                self._body = body
+
+            def read(self) -> bytes:
+                return self._body
+
+            def __enter__(self) -> "FakeResp":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        def fake_urlopen(req: object, timeout: float = 60) -> FakeResp:
+            full_url = getattr(req, "full_url")
+            calls.append(full_url)
+            if "force=1" not in full_url:
+                return FakeResp(200, b'{"ok":true,"rotated":false,"cooldown":true}')
+            return FakeResp(200, b'{"ok":true,"rotated":true,"cooldown":false}')
+
+        with patch.object(upstream, "UPSTREAM_ROTATE_URL", "http://127.0.0.1:40001/_rotate"), patch(
+            "urllib.request.urlopen", side_effect=fake_urlopen
+        ):
+            ok = upstream._trigger_rotate_webhook(force=False)
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            calls,
+            [
+                "http://127.0.0.1:40001/_rotate",
+                "http://127.0.0.1:40001/_rotate?force=1",
+            ],
+        )
+
+    def test_open_inference_retries_multiple_rotations_and_transient_502(self) -> None:
+        conn_429_1 = MagicMock(spec=http.client.HTTPConnection)
+        resp_429_1 = MagicMock(spec=http.client.HTTPResponse)
+        resp_429_1.status = 429
+        resp_429_1.read.return_value = b'{"error":{"message":"Rate limit"}}'
+
+        conn_502 = MagicMock(spec=http.client.HTTPConnection)
+        resp_502 = MagicMock(spec=http.client.HTTPResponse)
+        resp_502.status = 502
+        resp_502.read.return_value = b'{"error":{"message":"ECONNRESET"}}'
+
+        conn_429_2 = MagicMock(spec=http.client.HTTPConnection)
+        resp_429_2 = MagicMock(spec=http.client.HTTPResponse)
+        resp_429_2.status = 429
+        resp_429_2.read.return_value = b'{"error":{"message":"Rate limit"}}'
+
+        conn_ok = MagicMock(spec=http.client.HTTPConnection)
+        resp_ok = MagicMock(spec=http.client.HTTPResponse)
+        resp_ok.status = 200
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+        with patch.object(upstream, "UPSTREAM_ROTATE_URL", "http://127.0.0.1:40001/_rotate"), patch.object(
+            upstream.SIGNATURE, "get", return_value=fake_sig
+        ), patch("time.sleep"), patch.object(
+            upstream.UPSTREAM,
+            "open_upstream_stream",
+            side_effect=[
+                (conn_429_1, resp_429_1),
+                (conn_502, resp_502),
+                (conn_429_2, resp_429_2),
+                (conn_ok, resp_ok),
+            ],
+        ) as mock_open, patch.object(
+            upstream, "_trigger_rotate_webhook", return_value=True
+        ) as mock_rot:
+            st, conn, resp, body = upstream.open_inference_with_retry(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "deepseek-v4.1-flash-free",
+            )
+
+        self.assertEqual(mock_rot.call_count, 2)
+        self.assertEqual(mock_open.call_count, 4)
+        self.assertEqual(st, 200)
+        self.assertIs(conn, conn_ok)
+        self.assertIs(resp, resp_ok)
+        self.assertIsNone(body)
+
+    def test_rotate_for_generation_deduplicates_concurrent_callers(self) -> None:
+        upstream._ROTATE_GEN = 10
+        with patch.object(upstream, "_trigger_rotate_webhook", return_value=True) as mock_rot:
+            self.assertTrue(upstream._rotate_for_generation(10))
+            self.assertEqual(upstream._ROTATE_GEN, 11)
+            # Stale generation caller should skip redundant webhook call
+            self.assertTrue(upstream._rotate_for_generation(10))
+            self.assertEqual(mock_rot.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,13 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-11-24
+
+### Fixed
+- Escalated `POST /_rotate` cooldown/unchanged responses (`cooldown: true` or `rotated: false`) to `force=1` inside `_trigger_rotate_webhook()` so a `429` retry never wastes an attempt on the same rate-limited IP.
+- Added generation-based `_ROTATE_LOCK` / `_ROTATE_GEN` deduplication so concurrent `429` requests share one rotation instead of triggering back-to-back WARP disconnects that tear down in-flight connections.
+- Retried transient `502`/`503`/`504` upstream responses (e.g., `ECONNRESET` during proxy rotation) up to `BRIDGE_UPSTREAM_RETRIES` (default `3`), and raised rate-limit rotation retries to `BRIDGE_RATE_LIMIT_RETRIES` (default `4`).
+
 ## [0.5.1] - 2026-11-24
 
 ### Changed

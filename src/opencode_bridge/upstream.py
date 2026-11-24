@@ -20,11 +20,13 @@ from opencode_bridge.config import (
     INFERENCE_URL,
     MODELS_TTL_SEC,
     MODELS_URL,
+    RATE_LIMIT_RETRIES,
     REQUEST_TIMEOUT_SEC,
     STATE_DIR,
     UPSTREAM_HOST,
     UPSTREAM_PORT,
     UPSTREAM_PROXY_URL,
+    UPSTREAM_RETRY_COUNT,
     UPSTREAM_ROTATE_TOKEN,
     UPSTREAM_ROTATE_URL,
     log,
@@ -252,6 +254,10 @@ class ModelCatalogManager:
 MODELS_CATALOG = ModelCatalogManager()
 
 
+_ROTATE_LOCK = threading.Lock()
+_ROTATE_GEN = 0
+
+
 def _trigger_rotate_webhook(force: bool = False) -> bool:
     if not UPSTREAM_ROTATE_URL:
         return False
@@ -266,9 +272,33 @@ def _trigger_rotate_webhook(force: bool = False) -> bool:
     try:
         log(f"Rate limit hit; calling upstream rotate webhook (force={force})...")
         with urllib.request.urlopen(req, timeout=60) as r:
-            return 200 <= r.status < 300
+            raw = r.read().decode("utf-8", errors="replace").strip()
+            if not (200 <= r.status < 300):
+                return False
+            if raw:
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    return True
+                if isinstance(data, dict):
+                    if not force and (data.get("cooldown") or data.get("rotated") is False):
+                        log("Rotate webhook returned cooldown/unchanged IP; escalating with force=1...")
+                        return _trigger_rotate_webhook(force=True)
+                    return bool(data.get("ok", True))
+            return True
     except Exception as exc:
         log(f"Warning: upstream rotate webhook failed: {exc}")
+        return False
+
+
+def _rotate_for_generation(expected_gen: int) -> bool:
+    global _ROTATE_GEN
+    with _ROTATE_LOCK:
+        if _ROTATE_GEN != expected_gen:
+            return True
+        if _trigger_rotate_webhook(force=False):
+            _ROTATE_GEN += 1
+            return True
         return False
 
 
@@ -284,11 +314,14 @@ def open_inference_with_retry(
     payload = build_upstream_payload(req, model_id, sig)
     last_st = 502
     last_body: Any = {"error": {"message": "Upstream connection failed"}}
+    rotations_used = 0
+    transient_used = 0
 
-    for attempt in range(3):
+    while True:
         headers = make_opencode_headers(
             sig["user_agent"], sig.get("static_headers")
         )
+        gen_before = _ROTATE_GEN
         conn: http.client.HTTPConnection | None = None
         try:
             conn, resp = UPSTREAM.open_upstream_stream(
@@ -305,13 +338,22 @@ def open_inference_with_retry(
             except Exception:
                 body = {"error": {"message": raw or f"HTTP {st}"}}
             last_st, last_body = st, body
+
             if (
                 is_rate_limit_error(st, body)
                 and UPSTREAM_ROTATE_URL
-                and attempt < 2
-                and _trigger_rotate_webhook(force=(attempt > 0))
+                and rotations_used < RATE_LIMIT_RETRIES
+                and _rotate_for_generation(gen_before)
             ):
+                rotations_used += 1
                 continue
+
+            if st in (502, 503, 504) and transient_used < UPSTREAM_RETRY_COUNT:
+                transient_used += 1
+                log(f"Transient upstream HTTP {st}; retrying ({transient_used}/{UPSTREAM_RETRY_COUNT})...")
+                time.sleep(0.5)
+                continue
+
             return st, None, None, body
         except TimeoutError:
             if conn is not None:
@@ -333,7 +375,8 @@ def open_inference_with_retry(
                     pass
             last_st = 502
             last_body = {"error": {"message": f"Bridge upstream error: {exc}"}}
-            if attempt < 2:
+            if transient_used < UPSTREAM_RETRY_COUNT:
+                transient_used += 1
                 time.sleep(0.5)
                 continue
             return last_st, None, None, last_body
