@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenCode OpenAI-Compatible HTTP Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/share/opencode-bridge/opencode_openai_bridge.py
+Environment=BRIDGE_HOST=0.0.0.0
+Environment=BRIDGE_PORT=29471
+Environment=UPSTREAM_PORT=29472
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
