@@ -5,6 +5,15 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - 2026-11-24
+
+### Added
+- Multi-worker upstream pool (`WorkerPool` + `UpstreamWorker`) configurable via `BRIDGE_UPSTREAM_WORKERS` (CSV proxy list or JSON), with least-busy round-robin dispatch, per-worker stream tracking, instant `429`/`502` failover across workers, and `/health` `workers` / `worker_pool` telemetry.
+- Per-worker handshake pacing (`BRIDGE_WORKER_PACING_MS`, default `200ms`) and recent-success burst-`429` backoff (`BRIDGE_RECENT_SUCCESS_GRACE_SEC`, default `12s`) so concurrent bursts do not waste healthy WARP IPs.
+
+### Fixed
+- Made active-stream rotation protection strict: `rotate_for_generation()` never disconnects WARP while `active_streams > 0` (even for multi-minute thinking requests) or when a stale caller has `< BRIDGE_MIN_ROTATE_BUDGET_SEC` (`8s`) left, setting `pending_rotate` instead and automatically rotating in the background when active streams complete (`end_stream()`).
+
 ## [0.5.5] - 2026-11-24
 
 ### Fixed

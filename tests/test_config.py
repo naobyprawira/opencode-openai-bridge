@@ -51,6 +51,58 @@ class TestConfig(unittest.TestCase):
         if not os.environ.get("BRIDGE_SIGNATURE_CHECK_INTERVAL"):
             self.assertEqual(cfg.SIGNATURE_CHECK_INTERVAL_SEC, 86400.0)
 
+    def test_parse_upstream_workers_csv_json_and_fallback(self) -> None:
+        csv_workers = cfg.parse_upstream_workers(
+            "http://127.0.0.1:40001, http://127.0.0.1:40011",
+            fallback_token="tok",
+        )
+        self.assertEqual(
+            csv_workers,
+            [
+                {
+                    "proxy": "http://127.0.0.1:40001",
+                    "rotate": "http://127.0.0.1:40001/_rotate",
+                    "token": "tok",
+                },
+                {
+                    "proxy": "http://127.0.0.1:40011",
+                    "rotate": "http://127.0.0.1:40011/_rotate",
+                    "token": "tok",
+                },
+            ],
+        )
+
+        json_workers = cfg.parse_upstream_workers(
+            '[{"proxy":"http://127.0.0.1:40001","rotate":"http://127.0.0.1:40001/_rotate","token":"a"}]'
+        )
+        self.assertEqual(
+            json_workers,
+            [
+                {
+                    "proxy": "http://127.0.0.1:40001",
+                    "rotate": "http://127.0.0.1:40001/_rotate",
+                    "token": "a",
+                }
+            ],
+        )
+
+        fb = cfg.parse_upstream_workers(
+            "",
+            fallback_proxy="http://127.0.0.1:40001",
+            fallback_rotate="http://127.0.0.1:40001/_rotate",
+            fallback_token="sec",
+        )
+        self.assertEqual(
+            fb,
+            [
+                {
+                    "proxy": "http://127.0.0.1:40001",
+                    "rotate": "http://127.0.0.1:40001/_rotate",
+                    "token": "sec",
+                }
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

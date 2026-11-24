@@ -130,14 +130,18 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 | `BRIDGE_UPSTREAM_PROXY` | *(empty / direct)* | Optional HTTP/HTTPS proxy URL for Bun `fetch()` |
 | `BRIDGE_UPSTREAM_ROTATE_URL` | *(empty / disabled)* | Optional `POST` webhook URL triggered on `429` before retrying (e.g. `http://127.0.0.1:40001/_rotate`) |
 | `BRIDGE_UPSTREAM_ROTATE_TOKEN` | *(empty)* | Optional Bearer token sent to `BRIDGE_UPSTREAM_ROTATE_URL` |
+| `BRIDGE_UPSTREAM_WORKERS` | *(empty)* | Optional CSV or JSON list of worker proxy URLs (auto-derives `/_rotate`, falls back to single `BRIDGE_UPSTREAM_PROXY`) |
 | `BRIDGE_MODELS_TTL` | `300` | Live `/v1/models` catalog refresh interval (seconds) |
 | `BRIDGE_SIGNATURE_TTL` | `86400` | OpenCode signature cache TTL (seconds) |
 | `BRIDGE_SIGNATURE_CHECK_INTERVAL` | `86400` | Periodic upstream version/format check interval (`0` disables) |
 | `BRIDGE_RATE_LIMIT_RETRIES` | `2` | Maximum upstream IP rotation retries on `429` before failing |
 | `BRIDGE_UPSTREAM_RETRIES` | `2` | Maximum retries on transient `502`/`503`/`504` or connection resets |
 | `BRIDGE_RETRY_BUDGET_SEC` | `35` | Max total seconds spent retrying/rotating before returning upstream status (prevents downstream 120s connect timeouts) |
-| `BRIDGE_MAX_CONCURRENT_UPSTREAM` | `3` | Maximum simultaneous upstream connection handshakes (prevents fresh-IP `429` stampedes after rotation) |
-| `BRIDGE_ROTATE_STREAM_GRACE_SEC` | `10` | Max seconds a `429` rotation waits for active `200 OK` responses/streams to finish before disconnecting WARP |
+| `BRIDGE_MAX_CONCURRENT_UPSTREAM` | `3` | Maximum simultaneous upstream connection handshakes per worker |
+| `BRIDGE_ROTATE_STREAM_GRACE_SEC` | `10` | Max seconds a `429` rotation waits for active `200 OK` streams to drain before deferring rotation |
+| `BRIDGE_WORKER_PACING_MS` | `200` | Minimum interval (ms) between upstream handshakes on the same worker |
+| `BRIDGE_RECENT_SUCCESS_GRACE_SEC` | `12` | Window (seconds) after a `200 OK` during which a `429` triggers a `1s` burst backoff before rotating |
+| `BRIDGE_MIN_ROTATE_BUDGET_SEC` | `8` | Minimum remaining retry budget required for a caller to trigger rotation when streams are active |
 | `BRIDGE_REQUEST_TIMEOUT` | `240` | Upstream request timeout (seconds) |
 
 ## Testing

@@ -2,11 +2,84 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
 import sys
 import time
+from urllib.parse import urlsplit
+
+
+def derive_rotate_url(proxy_url: str) -> str:
+    """Derive default /_rotate webhook URL from a warp-rotating-proxy URL."""
+    parsed = urlsplit(proxy_url.strip())
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}/_rotate"
+    return ""
+
+
+def parse_upstream_workers(
+    raw_workers: str,
+    fallback_proxy: str = "",
+    fallback_rotate: str = "",
+    fallback_token: str = "",
+) -> list[dict[str, str]]:
+    """Parse BRIDGE_UPSTREAM_WORKERS (CSV or JSON) with single-proxy fallback."""
+    spec = raw_workers.strip()
+    workers: list[dict[str, str]] = []
+    if spec:
+        if spec.startswith("["):
+            try:
+                items = json.loads(spec)
+            except Exception:
+                items = []
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, str) and item.strip():
+                        p = item.strip()
+                        workers.append(
+                            {
+                                "proxy": p,
+                                "rotate": derive_rotate_url(p),
+                                "token": fallback_token,
+                            }
+                        )
+                    elif isinstance(item, dict):
+                        p = str(item.get("proxy") or item.get("proxy_url") or "").strip()
+                        r = str(item.get("rotate") or item.get("rotate_url") or "").strip()
+                        t = str(item.get("token") or item.get("rotate_token") or fallback_token).strip()
+                        if p or r:
+                            workers.append(
+                                {
+                                    "proxy": p,
+                                    "rotate": r or (derive_rotate_url(p) if p else ""),
+                                    "token": t,
+                                }
+                            )
+        else:
+            for part in spec.split(","):
+                p = part.strip()
+                if not p:
+                    continue
+                workers.append(
+                    {
+                        "proxy": p,
+                        "rotate": derive_rotate_url(p),
+                        "token": fallback_token,
+                    }
+                )
+        if len(workers) == 1 and fallback_rotate and not spec.startswith("["):
+            workers[0]["rotate"] = fallback_rotate
+    elif fallback_proxy or fallback_rotate:
+        workers.append(
+            {
+                "proxy": fallback_proxy,
+                "rotate": fallback_rotate,
+                "token": fallback_token,
+            }
+        )
+    return workers
 
 
 def resolve_binary(env_var: str, binary_name: str, extra_candidates: list[str]) -> str:
@@ -93,6 +166,12 @@ SIGNATURE_MODE = os.environ.get("BRIDGE_SIGNATURE_MODE", "auto").strip().lower()
 UPSTREAM_PROXY_URL = os.environ.get("BRIDGE_UPSTREAM_PROXY", "").strip()
 UPSTREAM_ROTATE_URL = os.environ.get("BRIDGE_UPSTREAM_ROTATE_URL", "").strip()
 UPSTREAM_ROTATE_TOKEN = os.environ.get("BRIDGE_UPSTREAM_ROTATE_TOKEN", "").strip()
+UPSTREAM_WORKERS = parse_upstream_workers(
+    os.environ.get("BRIDGE_UPSTREAM_WORKERS", ""),
+    fallback_proxy=UPSTREAM_PROXY_URL,
+    fallback_rotate=UPSTREAM_ROTATE_URL,
+    fallback_token=UPSTREAM_ROTATE_TOKEN,
+)
 
 REQUEST_TIMEOUT_SEC = float(os.environ.get("BRIDGE_REQUEST_TIMEOUT", "240"))
 SIGNATURE_TTL_SEC = float(os.environ.get("BRIDGE_SIGNATURE_TTL", "86400"))
@@ -108,6 +187,13 @@ MAX_CONCURRENT_UPSTREAM = max(
 )
 STREAM_GRACE_SEC = max(
     0.0, float(os.environ.get("BRIDGE_ROTATE_STREAM_GRACE_SEC", "10"))
+)
+WORKER_PACING_MS = max(0, int(os.environ.get("BRIDGE_WORKER_PACING_MS", "200")))
+RECENT_SUCCESS_GRACE_SEC = max(
+    0.0, float(os.environ.get("BRIDGE_RECENT_SUCCESS_GRACE_SEC", "12"))
+)
+MIN_ROTATE_BUDGET_SEC = max(
+    0.0, float(os.environ.get("BRIDGE_MIN_ROTATE_BUDGET_SEC", "8"))
 )
 
 DEFAULT_MODELS = [

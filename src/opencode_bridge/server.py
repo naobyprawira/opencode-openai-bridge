@@ -41,6 +41,7 @@ from opencode_bridge.signature import SIGNATURE
 from opencode_bridge.upstream import (
     MODELS_CATALOG,
     UPSTREAM,
+    WORKER_POOL,
     begin_active_stream,
     end_active_stream,
     open_inference_with_retry,
@@ -104,6 +105,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         path, _, query = self.path.partition("?")
         if path == "/health":
             sig = SIGNATURE.get()
+            workers = WORKER_POOL.snapshot()
             self._send_json(
                 200,
                 {
@@ -112,8 +114,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "upstream_port": UPSTREAM_PORT,
                     "mode": "bun-inference-passthrough",
                     "signature_source": sig.get("source", "unknown"),
-                    "proxy_configured": bool(UPSTREAM_PROXY_URL),
-                    "rotate_webhook_configured": bool(UPSTREAM_ROTATE_URL),
+                    "proxy_configured": bool(UPSTREAM_PROXY_URL)
+                    or any(w["proxy_configured"] for w in workers),
+                    "rotate_webhook_configured": bool(UPSTREAM_ROTATE_URL)
+                    or any(w["rotate_configured"] for w in workers),
+                    "workers": len(workers),
+                    "worker_pool": workers,
                 },
             )
             return
@@ -185,7 +191,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_openai_error(st if 400 <= st < 600 else 502, msg)
             return
 
-        begin_active_stream()
+        begin_active_stream(conn)
         try:
             if not stream:
                 completion = assemble_non_stream_response(resp, requested_model)
@@ -237,7 +243,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            end_active_stream()
+            end_active_stream(conn)
             try:
                 conn.close()
             except Exception:

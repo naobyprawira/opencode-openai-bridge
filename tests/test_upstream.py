@@ -11,6 +11,17 @@ from opencode_bridge import upstream
 
 
 class TestUpstream(unittest.TestCase):
+    def setUp(self) -> None:
+        w = upstream.WORKER_POOL.workers[0]
+        w.last_success_at = None
+        w.last_success_gen = None
+        w.last_rotate_at = None
+        w.cooldown_until = 0.0
+        w.pending_rotate = False
+        w._pending_rotate_gen = None
+        w._burst_retry_gen = None
+        upstream._ACTIVE_STREAMS = 0
+
     def test_open_upstream_stream_omits_proxy_when_unset(self) -> None:
         mgr = upstream.UpstreamManager()
         mock_conn = MagicMock(spec=http.client.HTTPConnection)
@@ -474,6 +485,170 @@ class TestUpstream(unittest.TestCase):
         self.assertEqual(len(stream_ended_at), 1)
         self.assertGreaterEqual(rot_called_at[0], stream_ended_at[0])
         self.assertEqual(upstream._ACTIVE_STREAMS, 0)
+
+    def test_multi_worker_pool_fails_over_on_429_without_waiting_for_rotation(self) -> None:
+        pool = upstream.WorkerPool(
+            [
+                {
+                    "proxy": "http://127.0.0.1:40001",
+                    "rotate": "http://127.0.0.1:40001/_rotate",
+                    "token": "",
+                },
+                {
+                    "proxy": "http://127.0.0.1:40011",
+                    "rotate": "http://127.0.0.1:40011/_rotate",
+                    "token": "",
+                },
+            ]
+        )
+        conn_429 = MagicMock(spec=http.client.HTTPConnection)
+        resp_429 = MagicMock(spec=http.client.HTTPResponse)
+        resp_429.status = 429
+        resp_429.read.return_value = b'{"error":{"message":"Rate limit"}}'
+
+        conn_ok = MagicMock(spec=http.client.HTTPConnection)
+        resp_ok = MagicMock(spec=http.client.HTTPResponse)
+        resp_ok.status = 200
+
+        seen_proxies: list[str | None] = []
+
+        def fake_open(*args: object, **kwargs: object) -> tuple[object, object]:
+            proxy = kwargs.get("proxy_url")
+            seen_proxies.append(proxy)  # type: ignore[arg-type]
+            if proxy == "http://127.0.0.1:40001":
+                return conn_429, resp_429
+            return conn_ok, resp_ok
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+
+        with patch.object(upstream, "WORKER_POOL", pool), patch.object(
+            upstream, "WORKER_PACING_MS", 0
+        ), patch.object(upstream.SIGNATURE, "get", return_value=fake_sig), patch.object(
+            upstream, "_trigger_rotate_webhook", return_value=True
+        ), patch.object(
+            upstream.UPSTREAM, "open_upstream_stream", side_effect=fake_open
+        ):
+            st, conn, resp, body = upstream.open_inference_with_retry(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "deepseek-v4.1-flash-free",
+            )
+
+        self.assertEqual(st, 200)
+        self.assertIs(conn, conn_ok)
+        self.assertIs(resp, resp_ok)
+        self.assertIsNone(body)
+        self.assertEqual(
+            seen_proxies,
+            ["http://127.0.0.1:40001", "http://127.0.0.1:40011"],
+        )
+
+    def test_burst_429_on_recently_healthy_worker_backs_off_before_rotating(self) -> None:
+        pool = upstream.WorkerPool(
+            [
+                {
+                    "proxy": "http://127.0.0.1:40001",
+                    "rotate": "http://127.0.0.1:40001/_rotate",
+                    "token": "",
+                }
+            ]
+        )
+        pool.workers[0].record_success()
+
+        conn_429 = MagicMock(spec=http.client.HTTPConnection)
+        resp_429 = MagicMock(spec=http.client.HTTPResponse)
+        resp_429.status = 429
+        resp_429.read.return_value = b'{"error":{"message":"Rate limit"}}'
+
+        conn_ok = MagicMock(spec=http.client.HTTPConnection)
+        resp_ok = MagicMock(spec=http.client.HTTPResponse)
+        resp_ok.status = 200
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+        upstream._ROTATE_GEN = 0
+        with patch.object(upstream, "WORKER_POOL", pool), patch.object(
+            upstream, "UPSTREAM_ROTATE_URL", "http://127.0.0.1:40001/_rotate"
+        ), patch.object(upstream, "WORKER_PACING_MS", 0), patch(
+            "time.sleep"
+        ) as mock_sleep, patch.object(
+            upstream.SIGNATURE, "get", return_value=fake_sig
+        ), patch.object(
+            upstream, "_trigger_rotate_webhook", return_value=True
+        ) as mock_rot, patch.object(
+            upstream.UPSTREAM,
+            "open_upstream_stream",
+            side_effect=[(conn_429, resp_429), (conn_ok, resp_ok)],
+        ):
+            st, conn, resp, _ = upstream.open_inference_with_retry(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "deepseek-v4.1-flash-free",
+            )
+
+        self.assertEqual(st, 200)
+        self.assertIs(conn, conn_ok)
+        self.assertIs(resp, resp_ok)
+        mock_sleep.assert_called_once()
+        mock_rot.assert_not_called()
+
+    def test_rotate_skipped_when_active_streams_present_and_budget_low(self) -> None:
+        worker = upstream.UpstreamWorker(
+            name="w0",
+            proxy_url="http://127.0.0.1:40001",
+            rotate_url="http://127.0.0.1:40001/_rotate",
+            is_primary=False,
+        )
+        worker.begin_stream()
+        with patch.object(
+            upstream, "_trigger_rotate_webhook", return_value=True
+        ) as mock_rot:
+            try:
+                ok = worker.rotate_for_generation(
+                    expected_gen=0, grace_sec=10.0, remaining_budget=3.0
+                )
+                self.assertFalse(ok)
+                self.assertTrue(worker.pending_rotate)
+                mock_rot.assert_not_called()
+            finally:
+                worker.end_stream()
+
+    def test_strict_stream_protection_defers_and_rotates_on_stream_end(self) -> None:
+        import threading
+
+        worker = upstream.UpstreamWorker(
+            name="w_long",
+            proxy_url="http://127.0.0.1:40001",
+            rotate_url="http://127.0.0.1:40001/_rotate",
+            is_primary=False,
+        )
+        rot_done = threading.Event()
+
+        def fake_rot(**kwargs: object) -> bool:
+            rot_done.set()
+            return True
+
+        worker.begin_stream()
+        with patch.object(
+            upstream, "_trigger_rotate_webhook", side_effect=fake_rot
+        ) as mock_rot:
+            ok = worker.rotate_for_generation(
+                expected_gen=0, grace_sec=0.02, remaining_budget=30.0
+            )
+            self.assertFalse(ok)
+            self.assertTrue(worker.pending_rotate)
+            mock_rot.assert_not_called()
+
+            # Long stream finally completes -> deferred rotation triggers automatically
+            worker.end_stream()
+            self.assertTrue(rot_done.wait(timeout=2.0))
+            self.assertFalse(worker.pending_rotate)
+            self.assertEqual(worker.get_gen(), 1)
 
 
 if __name__ == "__main__":
