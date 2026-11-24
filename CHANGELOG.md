@@ -5,6 +5,12 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-11-24
+
+### Added
+- Automatic `BUN_BIN` and `OPENCODE_BIN` binary path resolution across env overrides, common install locations, and `PATH` in `bridge_config.py`, with unit tests in `tests/test_config.py`.
+- Portable `install.sh` CLI flags (`--dest`, `--python`, `--bun`, `--opencode`, `--host`, `--port`, `--upstream-port`, `--non-interactive`) with auto-detection and interactive prompt fallback.
+
 ## [0.4.0] - 2026-11-24
 
 ### Added

@@ -25,14 +25,30 @@ opencode.ai/inference/openai/v1/chat/completions
 ## Prerequisites
 
 - Python 3.10+
-- [Bun](https://bun.sh/) (`~/.bun/bin/bun`)
-- [OpenCode CLI](https://opencode.ai/) (`~/.opencode/bin/opencode`)
+- [Bun](https://bun.sh/) (auto-detected via `BUN_BIN`, `~/.bun/bin/bun`, `/usr/local/bin/bun`, `/opt/homebrew/bin/bun`, or `PATH`)
+- [OpenCode CLI](https://opencode.ai/) (auto-detected via `OPENCODE_BIN`, `~/.opencode/bin/opencode`, `/usr/local/bin/opencode`, `/opt/homebrew/bin/opencode`, or `PATH`)
 
 ## Installation
 
 ```bash
 bash install.sh
 ```
+
+`install.sh` auto-detects `python3`, `bun`, `opencode`, and state directory paths, prompts interactively if any binary cannot be found, and injects the resolved paths into `~/.config/systemd/user/opencode-openai-bridge.service`. You can also pass explicit options:
+
+```bash
+bash install.sh \
+  --dest ~/.local/share/opencode-bridge \
+  --python /usr/bin/python3 \
+  --bun ~/.bun/bin/bun \
+  --opencode ~/.opencode/bin/opencode \
+  --host 0.0.0.0 \
+  --port 29471 \
+  --upstream-port 29472 \
+  --non-interactive
+```
+
+Run `bash install.sh --help` for all options.
 
 To allow Docker containers (e.g. `9router` on `docker0`) to reach port `29471` when UFW is enabled:
 
@@ -77,6 +93,8 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 | `BRIDGE_PORT` | `29471` | Public bridge port |
 | `UPSTREAM_PORT` | `29472` | Local Bun forwarder port |
 | `BRIDGE_STATE_DIR` | `~/.local/share/opencode-bridge` | State & `api_key` directory |
+| `BUN_BIN` | *(auto-detected)* | Override path to `bun` executable |
+| `OPENCODE_BIN` | *(auto-detected)* | Override path to `opencode` executable |
 | `BRIDGE_API_KEY` | *(auto-generated)* | Override static Bearer key |
 | `BRIDGE_UPSTREAM_PROXY` | *(empty / direct)* | Optional HTTP/HTTPS proxy URL for Bun `fetch()` |
 | `BRIDGE_UPSTREAM_ROTATE_URL` | *(empty / disabled)* | Optional `POST` webhook URL triggered on `429` before retrying (e.g. `http://127.0.0.1:40001/_rotate`) |
