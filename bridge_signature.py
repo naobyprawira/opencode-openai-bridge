@@ -1,24 +1,45 @@
-"""Captures, monitors, and auto-adapts OpenCode's canonical request signature."""
+"""Tracks, monitors, and auto-adapts OpenCode's canonical request signature.
+
+Default behavior (BRIDGE_SIGNATURE_MODE=auto) tracks upstream releases and
+source files on GitHub (anomalyco/opencode) with a bundled v2.4.1 fallback
+snapshot — requiring zero local `opencode` CLI binary. Setting
+BRIDGE_SIGNATURE_MODE=cli opts back into local `opencode --standalone` capture.
+"""
 
 from __future__ import annotations
 
+import copy
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 from bridge_config import (
     DEFAULT_MODELS,
     OPENCODE_BIN,
+    OPENCODE_GITHUB_REPO,
+    OPENCODE_UPDATE_URL,
     SIGNATURE_CHECK_INTERVAL_SEC,
     SIGNATURE_FILE,
+    SIGNATURE_MODE,
     SIGNATURE_TTL_SEC,
     STATE_DIR,
     log,
+)
+from bridge_defaults import (
+    DEFAULT_BASE_TOOLS,
+    DEFAULT_BODY_KEYS,
+    DEFAULT_HEADER_NAMES,
+    DEFAULT_REQUEST_PATH,
+    DEFAULT_STATIC_HEADERS,
+    DEFAULT_SYSTEM_PROMPT_SUFFIX,
+    build_default_signature,
 )
 
 
@@ -46,11 +67,10 @@ _DYNAMIC_HEADERS = frozenset(
     }
 )
 _EXPECTED_PATH = "/v1/chat/completions"
-_EXPECTED_HEADERS = frozenset(
+_EXPECTED_HEADERS = frozenset(DEFAULT_HEADER_NAMES)
+_EXPECTED_BODY_KEYS = frozenset(DEFAULT_BODY_KEYS)
+_CORE_MODEL_REQUEST_HEADERS = frozenset(
     {
-        "authorization",
-        "b3",
-        "traceparent",
         "user-agent",
         "x-opencode-client",
         "x-opencode-project",
@@ -60,16 +80,24 @@ _EXPECTED_HEADERS = frozenset(
         "x-session-id",
     }
 )
-_EXPECTED_BODY_KEYS = frozenset(
+_OPTIONAL_CONDITIONAL_HEADERS = frozenset(
     {
-        "max_completion_tokens",
-        "messages",
-        "model",
-        "stream",
-        "stream_options",
-        "tools",
+        "x-opencode-parent-session-id",
+        "x-parent-session-id",
     }
 )
+_DEFAULT_TOOL_GUIDANCE: dict[str, list[str]] = {
+    "shell": [
+        "- Prefer dedicated tools over shell commands; fall back to the shell when a tool cannot do what you need.",
+        "- Do not chain shell commands with separators like `echo \"====\";` or `printf '---'`; the output becomes noisy in a way that makes the user's side of the conversation worse.",
+    ],
+    "write": [
+        "- Use the write tool to create files or completely replace their content. Prefer using the edit tool for targeted changes.",
+    ],
+    "edit": [
+        "- Use the edit tool for targeted changes to existing text files. It replaces the exact text in `oldString` with `newString`, and the values must differ. By default, `oldString` must occur exactly once. If it occurs multiple times, include more surrounding context to make it unique or set `replaceAll` to true to replace every occurrence.",
+    ],
+}
 
 
 def _tool_names(tools: list[dict[str, Any]] | None) -> list[str]:
@@ -99,6 +127,63 @@ def extract_header_names(raw_headers: dict[str, str]) -> list[str]:
     return sorted({k.lower() for k in raw_headers if k.lower() not in ignored})
 
 
+def _unescape_js_string(raw: str, quote: str) -> str:
+    return (
+        raw.replace(f"\\{quote}", quote)
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace("\\\\", "\\")
+    )
+
+
+def render_system_prompt_from_sources(
+    system_txt: str, system_prompt_ts: str = ""
+) -> tuple[str, list[str]]:
+    """Render OpenCode's system.txt with tool guidance extracted from system-prompt.ts."""
+    warnings: list[str] = []
+    if "${OPENCODE_TOOL_GUIDANCE}" not in system_txt:
+        warnings.append("system.txt missing ${OPENCODE_TOOL_GUIDANCE} placeholder")
+        return system_txt, warnings
+
+    guidance_lines: list[str] = []
+    for tool_name in ("shell", "write", "edit"):
+        block_match = re.search(
+            rf'if\s*\(\s*tools\.includes\(\s*["\']{re.escape(tool_name)}["\']\s*\)\s*\)\s*\{{(.*?)\}}',
+            system_prompt_ts,
+            re.DOTALL,
+        )
+        parsed_lines: list[str] = []
+        if block_match:
+            block = block_match.group(1)
+            for m in re.finditer(r'(["\'])((?:\\.|(?!\1).)*)\1', block):
+                parsed_lines.append(_unescape_js_string(m.group(2), m.group(1)))
+        if parsed_lines:
+            guidance_lines.extend(parsed_lines)
+        else:
+            guidance_lines.extend(_DEFAULT_TOOL_GUIDANCE[tool_name])
+            if system_prompt_ts:
+                warnings.append(f"could not parse {tool_name} guidance in system-prompt.ts")
+
+    rendered = system_txt.replace("${OPENCODE_TOOL_GUIDANCE}", "\n".join(guidance_lines))
+    return rendered, warnings
+
+
+def extract_model_request_headers(model_request_ts: str) -> set[str]:
+    """Extract static/dynamic header keys from packages/core/src/session/model-request.ts."""
+    m = re.search(
+        r"ai\.request\(\s*\{.*?headers\s*:\s*\{(.*?)\n\s*\}",
+        model_request_ts,
+        re.DOTALL,
+    )
+    if not m:
+        return set()
+    block = m.group(1)
+    found: set[str] = set()
+    for km in re.finditer(r'["\']([A-Za-z0-9-]+)["\']\s*:', block):
+        found.add(km.group(1).lower())
+    return found
+
+
 def detect_signature_drift(
     prev: dict[str, Any] | None, fresh: dict[str, Any]
 ) -> tuple[list[str], list[str]]:
@@ -107,7 +192,7 @@ def detect_signature_drift(
     Returns (auto_adapted_notices, call_format_warnings).
     """
     adapted: list[str] = []
-    warnings: list[str] = []
+    warnings: list[str] = list(fresh.get("source_warnings") or [])
 
     if prev:
         if prev.get("cli_version") and prev.get("cli_version") != fresh.get("cli_version"):
@@ -170,7 +255,7 @@ def detect_signature_drift(
 
 
 class SignatureManager:
-    """Captures, monitors, and caches OpenCode's canonical call signature."""
+    """Tracks, monitors, and caches OpenCode's canonical call signature."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -178,7 +263,13 @@ class SignatureManager:
         self._stop_evt = threading.Event()
         self._monitor_thread: threading.Thread | None = None
 
+    @staticmethod
+    def _has_cli_binary() -> bool:
+        return bool(OPENCODE_BIN) and os.path.isfile(OPENCODE_BIN) and os.access(OPENCODE_BIN, os.X_OK)
+
     def _get_cli_version(self) -> str:
+        if not self._has_cli_binary():
+            return ""
         try:
             r = subprocess.run(
                 [OPENCODE_BIN, "--version"],
@@ -192,6 +283,124 @@ class SignatureManager:
         except Exception:
             pass
         return ""
+
+    @staticmethod
+    def _http_get_text(url: str, timeout: float = 10.0) -> str:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "opencode-openai-bridge"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+
+    def _fetch_latest_v2_release(self) -> tuple[str, str]:
+        """Return (channel, version) without consuming GitHub REST API rate limits."""
+        if OPENCODE_UPDATE_URL:
+            try:
+                raw = self._http_get_text(OPENCODE_UPDATE_URL, timeout=8.0)
+                obj = json.loads(raw)
+                ver = str(obj.get("version") or "").lstrip("v").strip()
+                chan = str(obj.get("channel") or "latest").strip() or "latest"
+                if re.match(r"^\d+\.\d+\.\d+", ver):
+                    return chan, ver
+            except Exception:
+                pass
+
+        releases_url = f"https://github.com/{OPENCODE_GITHUB_REPO}/releases"
+        html = self._http_get_text(releases_url, timeout=10.0)
+        escaped_repo = re.escape(OPENCODE_GITHUB_REPO)
+        matches = re.findall(
+            rf"/{escaped_repo}/releases/tag/v(2\.\d+\.\d+)", html
+        )
+        if matches:
+            return "latest", matches[0]
+        any_matches = re.findall(
+            rf"/{escaped_repo}/releases/tag/v(\d+\.\d+\.\d+)", html
+        )
+        if any_matches:
+            return "latest", any_matches[0]
+        raise RuntimeError(f"Could not determine latest version from {releases_url}")
+
+    def _capture_github(self, prev: dict[str, Any] | None = None) -> dict[str, Any]:
+        channel, version = self._fetch_latest_v2_release()
+        tag = f"v{version}"
+        raw_base = f"https://raw.githubusercontent.com/{OPENCODE_GITHUB_REPO}/{tag}"
+
+        system_txt = self._http_get_text(
+            f"{raw_base}/packages/core/src/session/runner/prompt/system.txt"
+        )
+        system_prompt_ts = ""
+        try:
+            system_prompt_ts = self._http_get_text(
+                f"{raw_base}/packages/core/src/session/system-prompt.ts"
+            )
+        except Exception:
+            pass
+
+        core_sys_msg, parse_warnings = render_system_prompt_from_sources(
+            system_txt, system_prompt_ts
+        )
+        sys_msg = core_sys_msg.rstrip() + "\n\n" + DEFAULT_SYSTEM_PROMPT_SUFFIX
+
+        # Inspect model-request.ts for any unexpected header drift.
+        header_names = list(DEFAULT_HEADER_NAMES)
+        try:
+            mr_ts = self._http_get_text(
+                f"{raw_base}/packages/core/src/session/model-request.ts"
+            )
+            parsed_headers = extract_model_request_headers(mr_ts)
+            if parsed_headers:
+                unexpected = parsed_headers - _CORE_MODEL_REQUEST_HEADERS - _OPTIONAL_CONDITIONAL_HEADERS
+                missing = _CORE_MODEL_REQUEST_HEADERS - parsed_headers
+                if unexpected or missing:
+                    non_req_base = set(DEFAULT_HEADER_NAMES) - _CORE_MODEL_REQUEST_HEADERS
+                    header_names = sorted(
+                        non_req_base | (parsed_headers - _OPTIONAL_CONDITIONAL_HEADERS)
+                    )
+        except Exception:
+            pass
+
+        base_tools = (
+            copy.deepcopy(prev["base_tools"])
+            if prev and isinstance(prev.get("base_tools"), list) and prev["base_tools"]
+            else copy.deepcopy(DEFAULT_BASE_TOOLS)
+        )
+        static_headers = (
+            dict(prev["static_headers"])
+            if prev and isinstance(prev.get("static_headers"), dict) and prev["static_headers"]
+            else dict(DEFAULT_STATIC_HEADERS)
+        )
+        models = (
+            list(prev["models"])
+            if prev and isinstance(prev.get("models"), list) and prev["models"]
+            else list(DEFAULT_MODELS)
+        )
+
+        ua = f"opencode/{channel}/{version}/cli"
+        cli_ver = f"opencode {tag}"
+        log(
+            f"Synced OpenCode signature from GitHub {OPENCODE_GITHUB_REPO}@{tag} "
+            f"(ua={ua}, sys_len={len(sys_msg)})"
+        )
+        out: dict[str, Any] = {
+            "captured_at": time.time(),
+            "source": f"github:{OPENCODE_GITHUB_REPO}@{tag}",
+            "cli_version": cli_ver,
+            "user_agent": ua,
+            "request_path": DEFAULT_REQUEST_PATH,
+            "header_names": header_names,
+            "static_headers": static_headers,
+            "body_keys": list(DEFAULT_BODY_KEYS),
+            "system_role": "system",
+            "system_content_type": "str",
+            "tool_types": ["function"],
+            "system_prompt": sys_msg,
+            "base_tools": base_tools,
+            "models": models,
+        }
+        if parse_warnings:
+            out["source_warnings"] = parse_warnings
+        return out
 
     @staticmethod
     def _is_cache_complete(cached: Any) -> bool:
@@ -219,8 +428,9 @@ class SignatureManager:
     def _save_disk_cache(self, data: dict[str, Any]) -> None:
         try:
             os.makedirs(STATE_DIR, exist_ok=True)
+            to_write = {k: v for k, v in data.items() if k != "source_warnings"}
             with open(SIGNATURE_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f)
+                json.dump(to_write, f)
         except OSError as exc:
             log(f"Warning: failed to cache signature: {exc}")
 
@@ -234,28 +444,67 @@ class SignatureManager:
     def get(self) -> dict[str, Any]:
         return self.check_and_refresh(force=False)
 
+    def _effective_mode(self) -> str:
+        if SIGNATURE_MODE in ("cli", "github", "static"):
+            return SIGNATURE_MODE
+        return "github"
+
     def check_and_refresh(self, force: bool = False) -> dict[str, Any]:
         with self._lock:
             now = time.time()
-            current_ver = self._get_cli_version()
+            mode = self._effective_mode()
             prev = self._data or self._load_disk_cache()
 
-            if not force and prev and self._is_cache_complete(prev):
-                fresh_ttl = (now - float(prev.get("captured_at", 0))) < SIGNATURE_TTL_SEC
-                same_ver = not current_ver or prev.get("cli_version") == current_ver
-                if fresh_ttl and same_ver:
+            if mode == "static":
+                if prev and self._is_cache_complete(prev):
                     self._data = prev
                     return prev
-                if current_ver and prev.get("cli_version") != current_ver:
-                    log(
-                        f"OpenCode CLI version changed ({prev.get('cli_version') or '?'} -> {current_ver}); re-checking call format..."
-                    )
+                fallback = build_default_signature()
+                self._data = fallback
+                self._save_disk_cache(fallback)
+                return fallback
 
-            fresh = self._capture(cli_version=current_ver)
-            self._log_drift(prev, fresh)
-            self._data = fresh
-            self._save_disk_cache(fresh)
-            return fresh
+            if mode == "cli":
+                current_ver = self._get_cli_version()
+                if not force and prev and self._is_cache_complete(prev):
+                    fresh_ttl = (now - float(prev.get("captured_at", 0))) < SIGNATURE_TTL_SEC
+                    same_ver = not current_ver or prev.get("cli_version") == current_ver
+                    if fresh_ttl and same_ver:
+                        self._data = prev
+                        return prev
+                    if current_ver and prev.get("cli_version") != current_ver:
+                        log(
+                            f"OpenCode CLI version changed ({prev.get('cli_version') or '?'} -> {current_ver}); re-checking call format..."
+                        )
+                fresh = self._capture(cli_version=current_ver)
+                self._log_drift(prev, fresh)
+                self._data = fresh
+                self._save_disk_cache(fresh)
+                return fresh
+
+            # Default: GitHub tracker + bundled fallback (zero opencode CLI dependency).
+            if not force and prev and self._is_cache_complete(prev):
+                fresh_ttl = (now - float(prev.get("captured_at", 0))) < SIGNATURE_TTL_SEC
+                if fresh_ttl:
+                    self._data = prev
+                    return prev
+
+            try:
+                fresh = self._capture_github(prev=prev)
+                self._log_drift(prev, fresh)
+                clean = {k: v for k, v in fresh.items() if k != "source_warnings"}
+                self._data = clean
+                self._save_disk_cache(clean)
+                return clean
+            except Exception as exc:
+                log(f"Warning: GitHub OpenCode tracker failed ({exc}); using cached/bundled signature")
+                if prev and self._is_cache_complete(prev):
+                    self._data = prev
+                    return prev
+                fallback = build_default_signature()
+                self._data = fallback
+                self._save_disk_cache(fallback)
+                return fallback
 
     def start_periodic_check(
         self, interval_sec: float = SIGNATURE_CHECK_INTERVAL_SEC
@@ -282,6 +531,8 @@ class SignatureManager:
         self._stop_evt.set()
 
     def _capture_models(self) -> list[str]:
+        if not self._has_cli_binary():
+            return list(DEFAULT_MODELS)
         try:
             r = subprocess.run(
                 [OPENCODE_BIN, "--standalone", "models"],
@@ -301,7 +552,9 @@ class SignatureManager:
         return list(DEFAULT_MODELS)
 
     def _capture(self, cli_version: str = "") -> dict[str, Any]:
-        log("Capturing canonical OpenCode request signature...")
+        if not self._has_cli_binary():
+            raise RuntimeError(f"opencode CLI binary not found at {OPENCODE_BIN}")
+        log("Capturing canonical OpenCode request signature via local CLI...")
         captured: list[dict[str, Any]] = []
 
         class CaptureHandler(BaseHTTPRequestHandler):
@@ -384,7 +637,7 @@ class SignatureManager:
             )
 
         req_path, hdrs, body_obj = req_entry
-        ua = hdrs.get("User-Agent") or hdrs.get("user-agent") or "opencode/latest/2.2.7/cli"
+        ua = hdrs.get("User-Agent") or hdrs.get("user-agent") or "opencode/latest/2.4.1/cli"
         sys_msg = ""
         sys_role = "system"
         sys_type = "str"
@@ -415,6 +668,7 @@ class SignatureManager:
         )
         return {
             "captured_at": time.time(),
+            "source": "cli",
             "cli_version": cli_ver,
             "user_agent": ua,
             "request_path": req_path,
