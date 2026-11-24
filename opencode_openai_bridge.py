@@ -10,6 +10,7 @@ Exposes:
 from __future__ import annotations
 
 import json
+import os
 import queue
 import secrets
 import signal
@@ -21,6 +22,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from bridge_config import (
+    API_KEY_FILE,
     BRIDGE_HOST,
     BRIDGE_PORT,
     UPSTREAM_PORT,
@@ -95,6 +97,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path, _, query = self.path.partition("?")
         if path == "/health":
+            sig = SIGNATURE.get()
             self._send_json(
                 200,
                 {
@@ -102,6 +105,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "bridge_port": BRIDGE_PORT,
                     "upstream_port": UPSTREAM_PORT,
                     "mode": "bun-inference-passthrough",
+                    "signature_source": sig.get("source", "unknown"),
                     "proxy_configured": bool(UPSTREAM_PROXY_URL),
                     "rotate_webhook_configured": bool(UPSTREAM_ROTATE_URL),
                 },
@@ -238,7 +242,7 @@ class ReusableThreadingHTTPServer(ThreadingHTTPServer):
 
 
 def main() -> None:
-    SIGNATURE.get()
+    sig = SIGNATURE.get()
     SIGNATURE.start_periodic_check()
     UPSTREAM.ensure_running()
     server = ReusableThreadingHTTPServer((BRIDGE_HOST, BRIDGE_PORT), BridgeHandler)
@@ -250,7 +254,15 @@ def main() -> None:
     signal.signal(signal.SIGTERM, handle_sig)
     signal.signal(signal.SIGINT, handle_sig)
 
-    log(f"OpenCode OpenAI bridge listening on http://{BRIDGE_HOST}:{BRIDGE_PORT}/v1")
+    auth_source = (
+        "BRIDGE_API_KEY env"
+        if os.environ.get("BRIDGE_API_KEY", "").strip()
+        else API_KEY_FILE
+    )
+    log(
+        f"OpenCode OpenAI bridge listening on http://{BRIDGE_HOST}:{BRIDGE_PORT}/v1 "
+        f"(auth: {auth_source}, sig: {sig.get('source', 'unknown')})"
+    )
     try:
         server.serve_forever()
     finally:
