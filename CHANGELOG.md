@@ -5,6 +5,13 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-11-24
+
+### Fixed
+- Added `BRIDGE_RETRY_BUDGET_SEC` (default `45` seconds) and tightened `BRIDGE_RATE_LIMIT_RETRIES` (`2`) and `BRIDGE_UPSTREAM_RETRIES` (`2`) so worst-case `429` rotations fail fast instead of hitting downstream router 120s `fetch connect timeout` (`502`).
+- Serialized upstream opening against `_ROTATE_LOCK` so concurrent requests wait for an active rotation instead of firing into `warp-cli disconnect` and triggering cascading `502 ECONNRESET` errors.
+- Retried `502`/`503`/`504` errors caused by a concurrent rotation (`_ROTATE_GEN` advance) without consuming the transient retry budget.
+
 ## [0.5.2] - 2026-11-24
 
 ### Fixed

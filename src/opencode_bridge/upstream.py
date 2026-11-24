@@ -22,6 +22,7 @@ from opencode_bridge.config import (
     MODELS_URL,
     RATE_LIMIT_RETRIES,
     REQUEST_TIMEOUT_SEC,
+    RETRY_BUDGET_SEC,
     STATE_DIR,
     UPSTREAM_HOST,
     UPSTREAM_PORT,
@@ -316,12 +317,15 @@ def open_inference_with_retry(
     last_body: Any = {"error": {"message": "Upstream connection failed"}}
     rotations_used = 0
     transient_used = 0
+    deadline = time.monotonic() + RETRY_BUDGET_SEC
 
     while True:
+        with _ROTATE_LOCK:
+            gen_before = _ROTATE_GEN
+
         headers = make_opencode_headers(
             sig["user_agent"], sig.get("static_headers")
         )
-        gen_before = _ROTATE_GEN
         conn: http.client.HTTPConnection | None = None
         try:
             conn, resp = UPSTREAM.open_upstream_stream(
@@ -339,6 +343,9 @@ def open_inference_with_retry(
                 body = {"error": {"message": raw or f"HTTP {st}"}}
             last_st, last_body = st, body
 
+            if time.monotonic() >= deadline:
+                return st, None, None, body
+
             if (
                 is_rate_limit_error(st, body)
                 and UPSTREAM_ROTATE_URL
@@ -348,11 +355,15 @@ def open_inference_with_retry(
                 rotations_used += 1
                 continue
 
-            if st in (502, 503, 504) and transient_used < UPSTREAM_RETRY_COUNT:
-                transient_used += 1
-                log(f"Transient upstream HTTP {st}; retrying ({transient_used}/{UPSTREAM_RETRY_COUNT})...")
-                time.sleep(0.5)
-                continue
+            if st in (502, 503, 504):
+                if _ROTATE_GEN != gen_before:
+                    log(f"Upstream HTTP {st} during concurrent rotation; retrying on fresh IP...")
+                    continue
+                if transient_used < UPSTREAM_RETRY_COUNT:
+                    transient_used += 1
+                    log(f"Transient upstream HTTP {st}; retrying ({transient_used}/{UPSTREAM_RETRY_COUNT})...")
+                    time.sleep(0.5)
+                    continue
 
             return st, None, None, body
         except TimeoutError:
@@ -375,6 +386,10 @@ def open_inference_with_retry(
                     pass
             last_st = 502
             last_body = {"error": {"message": f"Bridge upstream error: {exc}"}}
+            if time.monotonic() >= deadline:
+                return last_st, None, None, last_body
+            if _ROTATE_GEN != gen_before:
+                continue
             if transient_used < UPSTREAM_RETRY_COUNT:
                 transient_used += 1
                 time.sleep(0.5)

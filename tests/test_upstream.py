@@ -270,6 +270,75 @@ class TestUpstream(unittest.TestCase):
             self.assertTrue(upstream._rotate_for_generation(10))
             self.assertEqual(mock_rot.call_count, 1)
 
+    def test_open_inference_stops_at_retry_budget_deadline(self) -> None:
+        conn_429 = MagicMock(spec=http.client.HTTPConnection)
+        resp_429 = MagicMock(spec=http.client.HTTPResponse)
+        resp_429.status = 429
+        resp_429.read.return_value = b'{"error":{"message":"Rate limit"}}'
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+        with patch.object(upstream, "RETRY_BUDGET_SEC", 0.0), patch.object(
+            upstream, "UPSTREAM_ROTATE_URL", "http://127.0.0.1:40001/_rotate"
+        ), patch.object(upstream.SIGNATURE, "get", return_value=fake_sig), patch.object(
+            upstream.UPSTREAM,
+            "open_upstream_stream",
+            return_value=(conn_429, resp_429),
+        ) as mock_open, patch.object(
+            upstream, "_trigger_rotate_webhook", return_value=True
+        ) as mock_rot:
+            st, conn, resp, body = upstream.open_inference_with_retry(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "deepseek-v4.1-flash-free",
+            )
+
+        self.assertEqual(st, 429)
+        self.assertIsNone(conn)
+        self.assertIsNone(resp)
+        self.assertEqual(mock_open.call_count, 1)
+        self.assertEqual(mock_rot.call_count, 0)
+
+    def test_open_inference_retries_502_on_concurrent_rotation_without_burning_transient(self) -> None:
+        conn_502 = MagicMock(spec=http.client.HTTPConnection)
+        resp_502 = MagicMock(spec=http.client.HTTPResponse)
+        resp_502.status = 502
+        resp_502.read.return_value = b'{"error":{"message":"ECONNRESET"}}'
+
+        conn_ok = MagicMock(spec=http.client.HTTPConnection)
+        resp_ok = MagicMock(spec=http.client.HTTPResponse)
+        resp_ok.status = 200
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+
+        def fake_open(*args: object, **kwargs: object) -> tuple[object, object]:
+            if mock_open.call_count == 1:
+                upstream._ROTATE_GEN += 1
+                return conn_502, resp_502
+            return conn_ok, resp_ok
+
+        with patch.object(upstream, "UPSTREAM_RETRY_COUNT", 0), patch.object(
+            upstream.SIGNATURE, "get", return_value=fake_sig
+        ), patch.object(
+            upstream.UPSTREAM, "open_upstream_stream", side_effect=fake_open
+        ) as mock_open:
+            st, conn, resp, body = upstream.open_inference_with_retry(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "deepseek-v4.1-flash-free",
+            )
+
+        self.assertEqual(st, 200)
+        self.assertIs(conn, conn_ok)
+        self.assertIs(resp, resp_ok)
+        self.assertIsNone(body)
+        self.assertEqual(mock_open.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

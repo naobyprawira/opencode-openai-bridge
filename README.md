@@ -133,8 +133,9 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 | `BRIDGE_MODELS_TTL` | `300` | Live `/v1/models` catalog refresh interval (seconds) |
 | `BRIDGE_SIGNATURE_TTL` | `86400` | OpenCode signature cache TTL (seconds) |
 | `BRIDGE_SIGNATURE_CHECK_INTERVAL` | `86400` | Periodic upstream version/format check interval (`0` disables) |
-| `BRIDGE_RATE_LIMIT_RETRIES` | `4` | Maximum upstream IP rotation retries on `429` before failing |
-| `BRIDGE_UPSTREAM_RETRIES` | `3` | Maximum retries on transient `502`/`503`/`504` or connection resets |
+| `BRIDGE_RATE_LIMIT_RETRIES` | `2` | Maximum upstream IP rotation retries on `429` before failing |
+| `BRIDGE_UPSTREAM_RETRIES` | `2` | Maximum retries on transient `502`/`503`/`504` or connection resets |
+| `BRIDGE_RETRY_BUDGET_SEC` | `45` | Max total seconds spent retrying/rotating before returning upstream status (prevents downstream 120s connect timeouts) |
 | `BRIDGE_REQUEST_TIMEOUT` | `240` | Upstream request timeout (seconds) |
 
 ## Testing
