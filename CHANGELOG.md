@@ -5,6 +5,11 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-11-24
+
+### Fixed
+- Acquired `_ROTATE_LOCK` before checking `_ROTATE_GEN` on upstream `502`/`503`/`504` and connection errors so in-flight requests interrupted while another request is actively rotating wait for the rotation to complete and retry on the fresh IP instead of leaking `502` downstream.
+
 ## [0.5.3] - 2026-11-24
 
 ### Fixed

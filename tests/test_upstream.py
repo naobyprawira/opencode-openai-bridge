@@ -339,6 +339,62 @@ class TestUpstream(unittest.TestCase):
         self.assertIsNone(body)
         self.assertEqual(mock_open.call_count, 2)
 
+    def test_open_inference_waits_for_in_progress_rotate_lock_on_502(self) -> None:
+        import threading
+
+        conn_502 = MagicMock(spec=http.client.HTTPConnection)
+        resp_502 = MagicMock(spec=http.client.HTTPResponse)
+        resp_502.status = 502
+        resp_502.read.return_value = b'{"error":{"message":"ECONNRESET"}}'
+
+        conn_ok = MagicMock(spec=http.client.HTTPConnection)
+        resp_ok = MagicMock(spec=http.client.HTTPResponse)
+        resp_ok.status = 200
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+
+        rot_started = threading.Event()
+        release_rot = threading.Event()
+        call_num = 0
+
+        def fake_rotate() -> None:
+            with upstream._ROTATE_LOCK:
+                rot_started.set()
+                release_rot.wait(timeout=2.0)
+                upstream._ROTATE_GEN += 1
+
+        def fake_open(*args: object, **kwargs: object) -> tuple[object, object]:
+            nonlocal call_num
+            call_num += 1
+            if call_num == 1:
+                t = threading.Thread(target=fake_rotate, daemon=True)
+                t.start()
+                rot_started.wait(timeout=2.0)
+                # Release rotation shortly after 502 is returned
+                threading.Timer(0.05, release_rot.set).start()
+                return conn_502, resp_502
+            return conn_ok, resp_ok
+
+        with patch.object(upstream, "UPSTREAM_RETRY_COUNT", 0), patch.object(
+            upstream.SIGNATURE, "get", return_value=fake_sig
+        ), patch.object(
+            upstream.UPSTREAM, "open_upstream_stream", side_effect=fake_open
+        ):
+            st, conn, resp, body = upstream.open_inference_with_retry(
+                {"messages": [{"role": "user", "content": "hi"}]},
+                "deepseek-v4.1-flash-free",
+            )
+
+        self.assertEqual(st, 200)
+        self.assertIs(conn, conn_ok)
+        self.assertIs(resp, resp_ok)
+        self.assertIsNone(body)
+        self.assertEqual(call_num, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

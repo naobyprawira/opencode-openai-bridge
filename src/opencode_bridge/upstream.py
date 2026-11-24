@@ -356,7 +356,9 @@ def open_inference_with_retry(
                 continue
 
             if st in (502, 503, 504):
-                if _ROTATE_GEN != gen_before:
+                with _ROTATE_LOCK:
+                    rotated_while_inflight = _ROTATE_GEN != gen_before
+                if rotated_while_inflight:
                     log(f"Upstream HTTP {st} during concurrent rotation; retrying on fresh IP...")
                     continue
                 if transient_used < UPSTREAM_RETRY_COUNT:
@@ -388,7 +390,9 @@ def open_inference_with_retry(
             last_body = {"error": {"message": f"Bridge upstream error: {exc}"}}
             if time.monotonic() >= deadline:
                 return last_st, None, None, last_body
-            if _ROTATE_GEN != gen_before:
+            with _ROTATE_LOCK:
+                rotated_while_inflight = _ROTATE_GEN != gen_before
+            if rotated_while_inflight:
                 continue
             if transient_used < UPSTREAM_RETRY_COUNT:
                 transient_used += 1
