@@ -100,6 +100,35 @@ class TestProtocol(unittest.TestCase):
         self.assertTrue(proto.is_rate_limit_error(502, {"error": {"type": "FreeUsageLimitError"}}))
         self.assertFalse(proto.is_rate_limit_error(500, {"error": {"message": "Internal error"}}))
 
+    def test_extract_free_chat_models_filters_paid_and_non_chat(self) -> None:
+        raw = {
+            "data": [
+                {
+                    "id": "deepseek-v4.1-flash-free",
+                    "type": "chat",
+                    "created": 1700000000,
+                    "owned_by": "opencode",
+                    "modalities": {"input": ["text", "image/png"], "output": ["text"]},
+                    "capabilities": {"tools": {"supported": True}, "reasoning": {"supported": True}},
+                    "cost": {"text": {"input": {"price": 0}, "output": {"price": 0}}},
+                },
+                {
+                    "id": "jev-1.13-free",
+                    "type": "decision",
+                    "cost": {"text": {"input": {"price": 0}, "output": {"price": 0}}},
+                },
+                {
+                    "id": "paid-pro",
+                    "type": "chat",
+                    "cost": {"text": {"input": {"price": 1.5}, "output": {"price": 6.0}}},
+                },
+            ]
+        }
+        models = proto.extract_free_chat_models(raw)
+        self.assertEqual([m["id"] for m in models], ["deepseek-v4.1-flash-free"])
+        self.assertEqual(models[0]["modalities"]["input"], ["text", "image/png"])
+        self.assertTrue(models[0]["capabilities"]["tools"]["supported"])
+
 
 if __name__ == "__main__":
     unittest.main()

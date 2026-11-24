@@ -104,6 +104,38 @@ class TestUpstream(unittest.TestCase):
         self.assertIs(resp, mock_resp)
         self.assertIsNone(body)
 
+    def test_model_catalog_caches_and_refreshes_on_force(self) -> None:
+        mgr = upstream.ModelCatalogManager()
+        payload = {
+            "data": [
+                {
+                    "id": "new-free-model",
+                    "type": "chat",
+                    "cost": {"text": {"input": {"price": 0}, "output": {"price": 0}}},
+                }
+            ]
+        }
+        with patch.object(upstream.SIGNATURE, "get", return_value={"user_agent": "opencode/test", "models": ["fallback"]}), patch.object(
+            upstream.UPSTREAM, "fetch_json", return_value=(200, payload)
+        ) as mock_fetch:
+            first = mgr.get()
+            second = mgr.get()
+            forced = mgr.get(force=True)
+
+        self.assertEqual([m["id"] for m in first], ["new-free-model"])
+        self.assertEqual([m["id"] for m in second], ["new-free-model"])
+        self.assertEqual([m["id"] for m in forced], ["new-free-model"])
+        self.assertEqual(mock_fetch.call_count, 2)
+
+    def test_model_catalog_falls_back_when_fetch_fails(self) -> None:
+        mgr = upstream.ModelCatalogManager()
+        with patch.object(upstream.SIGNATURE, "get", return_value={"user_agent": "opencode/test", "models": ["big-pickle"]}), patch.object(
+            upstream.UPSTREAM, "fetch_json", side_effect=OSError("offline")
+        ):
+            models = mgr.get()
+
+        self.assertEqual([m["id"] for m in models], ["big-pickle"])
+
 
 if __name__ == "__main__":
     unittest.main()
