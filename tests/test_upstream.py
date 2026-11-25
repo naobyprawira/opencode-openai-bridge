@@ -650,6 +650,203 @@ class TestUpstream(unittest.TestCase):
             self.assertFalse(worker.pending_rotate)
             self.assertEqual(worker.get_gen(), 1)
 
+    def test_worker_pool_standby_max_summary_and_dormant(self) -> None:
+        specs = [
+            {"proxy": f"http://127.0.0.1:{40011 + i}", "container": f"warp-worker-{i + 1}"}
+            for i in range(6)
+        ]
+        pool = upstream.WorkerPool(specs, standby=2, max_workers=4, idle_sec=300.0)
+        summary = pool.summary()
+        self.assertEqual(summary["standby"], 2)
+        self.assertEqual(summary["max"], 4)
+        self.assertEqual(summary["active"], 2)
+        self.assertEqual([w.container for w in pool.enabled_workers()], ["warp-worker-1", "warp-worker-2"])
+        self.assertEqual([w.container for w in pool.dormant_workers()], ["warp-worker-3", "warp-worker-4"])
+
+    def test_summon_on_event_activates_dormant_worker_on_429_without_touching_active_stream(self) -> None:
+        import time
+
+        specs = [
+            {
+                "proxy": f"http://127.0.0.1:{40011 + i}",
+                "rotate": f"http://127.0.0.1:{40011 + i}/_rotate",
+                "container": f"warp-worker-{i + 1}",
+            }
+            for i in range(4)
+        ]
+        pool = upstream.WorkerPool(specs, standby=2, max_workers=4, idle_sec=600.0)
+        # Both standby workers have active long-running thinking streams
+        pool.workers[0].begin_stream()
+        pool.workers[1].begin_stream()
+
+        conn_429 = MagicMock(spec=http.client.HTTPConnection)
+        resp_429 = MagicMock(spec=http.client.HTTPResponse)
+        resp_429.status = 429
+        resp_429.read.return_value = b'{"error":{"message":"Rate limit"}}'
+
+        conn_ok = MagicMock(spec=http.client.HTTPConnection)
+        resp_ok = MagicMock(spec=http.client.HTTPResponse)
+        resp_ok.status = 200
+
+        seen_proxies: list[str | None] = []
+        started_containers: list[str] = []
+        allow_worker3_ready = False
+
+        def fake_docker(args: list[str], timeout: float = 15.0) -> tuple[bool, str]:
+            if args[:1] == ["start"]:
+                started_containers.append(args[1])
+            return True, ""
+
+        def fake_health(worker: upstream.UpstreamWorker, timeout: float = 2.0) -> bool:
+            return allow_worker3_ready and worker.container in started_containers
+
+        def fake_open(*args: object, **kwargs: object) -> tuple[object, object]:
+            nonlocal allow_worker3_ready
+            proxy = kwargs.get("proxy_url")
+            seen_proxies.append(proxy)  # type: ignore[arg-type]
+            if proxy in ("http://127.0.0.1:40011", "http://127.0.0.1:40012"):
+                if len(seen_proxies) >= 2:
+                    # Worker 3 finishes booting right as standby pool exhausts on 429
+                    allow_worker3_ready = True
+                return conn_429, resp_429
+            return conn_ok, resp_ok
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+        try:
+            with patch.object(upstream, "WORKER_POOL", pool), patch.object(
+                upstream, "WORKER_PACING_MS", 0
+            ), patch.object(
+                upstream.SIGNATURE, "get", return_value=fake_sig
+            ), patch.object(
+                pool, "_run_docker", side_effect=fake_docker
+            ), patch.object(
+                pool, "_check_worker_health", side_effect=fake_health
+            ), patch.object(
+                upstream, "_trigger_rotate_webhook", return_value=True
+            ) as mock_rot, patch.object(
+                upstream.UPSTREAM, "open_upstream_stream", side_effect=fake_open
+            ):
+                st, conn, resp, body = upstream.open_inference_with_retry(
+                    {"messages": [{"role": "user", "content": "hi"}]},
+                    "deepseek-v4.1-flash-free",
+                )
+            time.sleep(0.05)
+        finally:
+            pool.workers[0].end_stream()
+            pool.workers[1].end_stream()
+
+        self.assertEqual(st, 200)
+        self.assertIs(conn, conn_ok)
+        self.assertIs(resp, resp_ok)
+        self.assertIsNone(body)
+        # Standby workers were NEVER disconnected because they had active streams
+        mock_rot.assert_not_called()
+        self.assertEqual(started_containers, ["warp-worker-3"])
+        self.assertEqual(
+            seen_proxies,
+            [
+                "http://127.0.0.1:40011",
+                "http://127.0.0.1:40012",
+                "http://127.0.0.1:40013",
+            ],
+        )
+        self.assertTrue(pool.workers[2].enabled)
+
+    def test_saturation_summons_async_and_scales_before_429(self) -> None:
+        import time
+
+        specs = [
+            {
+                "proxy": f"http://127.0.0.1:{40011 + i}",
+                "rotate": f"http://127.0.0.1:{40011 + i}/_rotate",
+                "container": f"warp-worker-{i + 1}",
+            }
+            for i in range(4)
+        ]
+        pool = upstream.WorkerPool(specs, standby=2, max_workers=4, idle_sec=600.0)
+        pool.workers[0].begin_stream()
+        pool.workers[1].begin_stream()
+
+        conn_ok = MagicMock(spec=http.client.HTTPConnection)
+        resp_ok = MagicMock(spec=http.client.HTTPResponse)
+        resp_ok.status = 200
+        seen_proxies: list[str | None] = []
+
+        def fake_open(*args: object, **kwargs: object) -> tuple[object, object]:
+            seen_proxies.append(kwargs.get("proxy_url"))  # type: ignore[arg-type]
+            return conn_ok, resp_ok
+
+        fake_sig = {
+            "user_agent": "opencode/test",
+            "system_prompt": "You are an AI agent running in OpenCode.",
+            "base_tools": [],
+        }
+        try:
+            with patch.object(upstream, "WORKER_POOL", pool), patch.object(
+                upstream, "WORKER_PACING_MS", 0
+            ), patch.object(
+                upstream.SIGNATURE, "get", return_value=fake_sig
+            ), patch.object(
+                pool, "_run_docker", return_value=(True, "")
+            ), patch.object(
+                pool, "_check_worker_health", return_value=True
+            ), patch.object(
+                upstream.UPSTREAM, "open_upstream_stream", side_effect=fake_open
+            ):
+                st, conn, resp, body = upstream.open_inference_with_retry(
+                    {"messages": [{"role": "user", "content": "hi"}]},
+                    "deepseek-v4.1-flash-free",
+                )
+            time.sleep(0.05)
+        finally:
+            pool.workers[0].end_stream()
+            pool.workers[1].end_stream()
+
+        self.assertEqual(st, 200)
+        self.assertIs(conn, conn_ok)
+        self.assertIs(resp, resp_ok)
+        self.assertIsNone(body)
+        self.assertTrue(pool.workers[2].enabled)
+        self.assertEqual(len(seen_proxies), 1)
+
+    def test_idle_reaper_despawns_idle_on_demand_and_keeps_standby_and_busy(self) -> None:
+        specs = [
+            {"proxy": f"http://127.0.0.1:{40011 + i}", "container": f"warp-worker-{i + 1}"}
+            for i in range(3)
+        ]
+        pool = upstream.WorkerPool(specs, standby=1, max_workers=3, idle_sec=60.0)
+        # Simulate worker 2 (idle on-demand) and worker 3 (busy on-demand) active
+        pool.workers[1].enabled = True
+        pool.workers[1].last_used_at = 100.0
+        pool.workers[2].enabled = True
+        pool.workers[2].last_used_at = 100.0
+        pool.workers[2].begin_stream()
+        # Standby worker 1 also looks old but must NEVER be stopped
+        pool.workers[0].last_used_at = 100.0
+
+        stopped_containers: list[str] = []
+
+        def fake_docker(args: list[str], timeout: float = 15.0) -> tuple[bool, str]:
+            if args[:1] == ["stop"]:
+                stopped_containers.append(args[1])
+            return True, ""
+
+        try:
+            with patch.object(pool, "_run_docker", side_effect=fake_docker):
+                reaped = pool.reap_idle_workers(now=200.0)
+        finally:
+            pool.workers[2].end_stream()
+
+        self.assertEqual(reaped, 1)
+        self.assertEqual(stopped_containers, ["warp-worker-2"])
+        self.assertTrue(pool.workers[0].enabled)
+        self.assertFalse(pool.workers[1].enabled)
+        self.assertTrue(pool.workers[2].enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

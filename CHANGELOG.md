@@ -5,6 +5,12 @@ All notable changes to `opencode-openai-bridge` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] - 2026-11-24
+
+### Added
+- Summon-on-event WARP worker autoscaling (`--standby-workers` / `BRIDGE_WORKERS_STANDBY`, `--max-workers` / `BRIDGE_WORKERS_MAX`, `--worker-idle-sec` / `BRIDGE_WORKER_IDLE_SEC`, `--worker-prefix`, `--worker-base-port`, `--docker-sudo`), plus CLI flags via `opencode_bridge.cli` and `install.sh`.
+- Proactive async warm-up when all enabled standby workers are busy with active streams, reactive sync summon when enabled workers hit `429`/`502` while stream-protected, startup reconciliation, background idle container despawn (`reap_idle_workers`), and `/health` fleet counters (`workers_standby`, `workers_max`, `workers_active`, `workers_starting`, `worker_idle_sec`).
+
 ## [0.5.6] - 2026-11-24
 
 ### Added

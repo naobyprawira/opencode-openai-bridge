@@ -93,6 +93,19 @@ Environment=BRIDGE_UPSTREAM_PROXY=http://127.0.0.1:40001
 Environment=BRIDGE_UPSTREAM_ROTATE_URL=http://127.0.0.1:40001/_rotate
 ```
 
+Or use **multi-worker WARP with summon-on-event** (`--standby-workers` always-on + `--max-workers` on-demand containers that boot automatically on saturation/`429` and despawn after `--worker-idle-sec`):
+
+```bash
+python3 -m opencode_bridge \
+  --standby-workers 3 \
+  --max-workers 15 \
+  --worker-idle-sec 600 \
+  --worker-prefix warp-worker \
+  --worker-base-port 40011
+```
+
+Or pass explicit flags to `install.sh` (`--standby-workers 3 --max-workers 15 --worker-idle-sec 600 --worker-prefix warp-worker --worker-base-port 40011`).
+
 ## Endpoints & Usage
 
 - `GET /health`
@@ -130,7 +143,15 @@ curl -N http://127.0.0.1:29471/v1/chat/completions \
 | `BRIDGE_UPSTREAM_PROXY` | *(empty / direct)* | Optional HTTP/HTTPS proxy URL for Bun `fetch()` |
 | `BRIDGE_UPSTREAM_ROTATE_URL` | *(empty / disabled)* | Optional `POST` webhook URL triggered on `429` before retrying (e.g. `http://127.0.0.1:40001/_rotate`) |
 | `BRIDGE_UPSTREAM_ROTATE_TOKEN` | *(empty)* | Optional Bearer token sent to `BRIDGE_UPSTREAM_ROTATE_URL` |
-| `BRIDGE_UPSTREAM_WORKERS` | *(empty)* | Optional CSV or JSON list of worker proxy URLs (auto-derives `/_rotate`, falls back to single `BRIDGE_UPSTREAM_PROXY`) |
+| `BRIDGE_UPSTREAM_WORKERS` | *(empty)* | Optional CSV or JSON list of worker proxy URLs (supports `container` and `on_demand` fields) |
+| `BRIDGE_WORKERS_STANDBY` | `0` *(all standby)* | Number of always-on standby workers (`--standby-workers`) |
+| `BRIDGE_WORKERS_MAX` | `0` *(unlimited)* | Max total workers including on-demand summon-on-event (`--max-workers`) |
+| `BRIDGE_WORKER_IDLE_SEC` | `600` | Seconds before idle on-demand workers are stopped; `0` disables (`--worker-idle-sec`) |
+| `BRIDGE_WORKER_SUMMON_TIMEOUT_SEC` | `25` | Max seconds to wait for an on-demand worker container to become healthy |
+| `BRIDGE_WORKER_PREFIX` | *(empty)* | Auto-generate worker container names `<prefix>-1..max` when `BRIDGE_UPSTREAM_WORKERS` is unset |
+| `BRIDGE_WORKER_BASE_PORT` | `0` | Base localhost port for auto-generated worker fleet (`--worker-base-port`) |
+| `BRIDGE_WORKER_DOCKER_BIN` | *(auto-detected)* | Override path to `docker` executable |
+| `BRIDGE_WORKER_DOCKER_SUDO` | `auto` | `auto` (use `sudo -n` if `/var/run/docker.sock` is not writable), `1`, or `0` |
 | `BRIDGE_MODELS_TTL` | `300` | Live `/v1/models` catalog refresh interval (seconds) |
 | `BRIDGE_SIGNATURE_TTL` | `86400` | OpenCode signature cache TTL (seconds) |
 | `BRIDGE_SIGNATURE_CHECK_INTERVAL` | `86400` | Periodic upstream version/format check interval (`0` disables) |

@@ -106,6 +106,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if path == "/health":
             sig = SIGNATURE.get()
             workers = WORKER_POOL.snapshot()
+            summary = WORKER_POOL.summary()
             self._send_json(
                 200,
                 {
@@ -119,6 +120,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     "rotate_webhook_configured": bool(UPSTREAM_ROTATE_URL)
                     or any(w["rotate_configured"] for w in workers),
                     "workers": len(workers),
+                    "workers_standby": summary["standby"],
+                    "workers_max": summary["max"],
+                    "workers_active": summary["active"],
+                    "workers_starting": summary["starting"],
+                    "worker_idle_sec": summary["idle_sec"],
                     "worker_pool": workers,
                 },
             )
@@ -259,6 +265,7 @@ def main() -> None:
     sig = SIGNATURE.get()
     SIGNATURE.start_periodic_check()
     UPSTREAM.ensure_running()
+    WORKER_POOL.start_manager()
     server = ReusableThreadingHTTPServer((BRIDGE_HOST, BRIDGE_PORT), BridgeHandler)
 
     def handle_sig(signum: int, _frame: Any) -> None:
@@ -273,13 +280,16 @@ def main() -> None:
         if os.environ.get("BRIDGE_API_KEY", "").strip()
         else API_KEY_FILE
     )
+    pool_sum = WORKER_POOL.summary()
     log(
         f"OpenCode OpenAI bridge listening on http://{BRIDGE_HOST}:{BRIDGE_PORT}/v1 "
-        f"(auth: {auth_source}, sig: {sig.get('source', 'unknown')})"
+        f"(auth: {auth_source}, sig: {sig.get('source', 'unknown')}, "
+        f"workers: standby={pool_sum['standby']}/max={pool_sum['max']})"
     )
     try:
         server.serve_forever()
     finally:
+        WORKER_POOL.stop_manager()
         SIGNATURE.stop_periodic_check()
         UPSTREAM.stop()
         server.server_close()

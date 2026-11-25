@@ -13,6 +13,12 @@ BRIDGE_HOST="${BRIDGE_HOST:-0.0.0.0}"
 BRIDGE_PORT="${BRIDGE_PORT:-29471}"
 UPSTREAM_PORT="${UPSTREAM_PORT:-29472}"
 SIGNATURE_MODE="${BRIDGE_SIGNATURE_MODE:-auto}"
+WORKERS_SPEC="${BRIDGE_UPSTREAM_WORKERS:-}"
+WORKERS_STANDBY="${BRIDGE_WORKERS_STANDBY:-}"
+WORKERS_MAX="${BRIDGE_WORKERS_MAX:-}"
+WORKER_IDLE_SEC="${BRIDGE_WORKER_IDLE_SEC:-}"
+WORKER_PREFIX="${BRIDGE_WORKER_PREFIX:-}"
+WORKER_BASE_PORT="${BRIDGE_WORKER_BASE_PORT:-}"
 NON_INTERACTIVE="${NON_INTERACTIVE:-0}"
 
 usage() {
@@ -20,16 +26,22 @@ usage() {
 Usage: bash install.sh [options]
 
 Options:
-  --dest DIR              Install/state directory (default: $DEST)
-  --python PATH           Python 3 binary path (auto-detected)
-  --bun PATH              Bun binary path (auto-detected)
-  --opencode PATH         Optional OpenCode CLI binary path (auto-detected)
-  --signature-mode MODE   auto | github | cli | static (default: $SIGNATURE_MODE)
-  --host ADDR             Bridge listen host (default: $BRIDGE_HOST)
-  --port PORT             Bridge listen port (default: $BRIDGE_PORT)
-  --upstream-port PORT    Local Bun forwarder port (default: $UPSTREAM_PORT)
-  --non-interactive       Fail instead of prompting if a required path is missing
-  -h, --help              Show this help
+  --dest DIR               Install/state directory (default: $DEST)
+  --python PATH            Python 3 binary path (auto-detected)
+  --bun PATH               Bun binary path (auto-detected)
+  --opencode PATH          Optional OpenCode CLI binary path (auto-detected)
+  --signature-mode MODE    auto | github | cli | static (default: $SIGNATURE_MODE)
+  --host ADDR              Bridge listen host (default: $BRIDGE_HOST)
+  --port PORT              Bridge listen port (default: $BRIDGE_PORT)
+  --upstream-port PORT     Local Bun forwarder port (default: $UPSTREAM_PORT)
+  --workers SPEC           Optional BRIDGE_UPSTREAM_WORKERS CSV or JSON
+  --standby-workers N      Always-on standby workers (optional)
+  --max-workers N          Max summon-on-event workers (optional)
+  --worker-idle-sec SEC    Idle timeout before on-demand worker stop (optional)
+  --worker-prefix NAME     Docker worker prefix for auto-generated pool (optional)
+  --worker-base-port PORT  Base localhost port for auto-generated pool (optional)
+  --non-interactive        Fail instead of prompting if a required path is missing
+  -h, --help               Show this help
 EOF
 }
 
@@ -43,6 +55,12 @@ while [[ $# -gt 0 ]]; do
     --host) BRIDGE_HOST="$2"; shift 2 ;;
     --port) BRIDGE_PORT="$2"; shift 2 ;;
     --upstream-port) UPSTREAM_PORT="$2"; shift 2 ;;
+    --workers) WORKERS_SPEC="$2"; shift 2 ;;
+    --standby-workers) WORKERS_STANDBY="$2"; shift 2 ;;
+    --max-workers) WORKERS_MAX="$2"; shift 2 ;;
+    --worker-idle-sec) WORKER_IDLE_SEC="$2"; shift 2 ;;
+    --worker-prefix) WORKER_PREFIX="$2"; shift 2 ;;
+    --worker-base-port) WORKER_BASE_PORT="$2"; shift 2 ;;
     --non-interactive) NON_INTERACTIVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -131,6 +149,7 @@ rm -f \
 for f in \
   __init__.py \
   __main__.py \
+  cli.py \
   config.py \
   defaults.py \
   protocol.py \
@@ -162,6 +181,24 @@ Environment=BUN_BIN=$BUN_BIN
 EOF
   if [[ -n "$OPENCODE_BIN" ]]; then
     echo "Environment=OPENCODE_BIN=$OPENCODE_BIN"
+  fi
+  if [[ -n "$WORKERS_SPEC" ]]; then
+    printf "Environment='BRIDGE_UPSTREAM_WORKERS=%s'\n" "$WORKERS_SPEC"
+  fi
+  if [[ -n "$WORKERS_STANDBY" ]]; then
+    echo "Environment=BRIDGE_WORKERS_STANDBY=$WORKERS_STANDBY"
+  fi
+  if [[ -n "$WORKERS_MAX" ]]; then
+    echo "Environment=BRIDGE_WORKERS_MAX=$WORKERS_MAX"
+  fi
+  if [[ -n "$WORKER_IDLE_SEC" ]]; then
+    echo "Environment=BRIDGE_WORKER_IDLE_SEC=$WORKER_IDLE_SEC"
+  fi
+  if [[ -n "$WORKER_PREFIX" ]]; then
+    echo "Environment=BRIDGE_WORKER_PREFIX=$WORKER_PREFIX"
+  fi
+  if [[ -n "$WORKER_BASE_PORT" ]]; then
+    echo "Environment=BRIDGE_WORKER_BASE_PORT=$WORKER_BASE_PORT"
   fi
   cat <<EOF
 Environment=PYTHONUNBUFFERED=1

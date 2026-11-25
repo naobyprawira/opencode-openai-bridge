@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.request
 from typing import Any
+from urllib.parse import urlsplit
 
 from opencode_bridge.config import (
     BUN_BIN,
@@ -35,7 +36,14 @@ from opencode_bridge.config import (
     UPSTREAM_ROTATE_TOKEN,
     UPSTREAM_ROTATE_URL,
     UPSTREAM_WORKERS,
+    WORKER_DOCKER_BIN,
+    WORKER_DOCKER_SUDO,
+    WORKER_IDLE_SEC,
     WORKER_PACING_MS,
+    WORKER_REAPER_INTERVAL_SEC,
+    WORKER_SUMMON_TIMEOUT_SEC,
+    WORKERS_MAX,
+    WORKERS_STANDBY,
     log,
 )
 from opencode_bridge.protocol import (
@@ -331,12 +339,23 @@ class UpstreamWorker:
         rotate_url: str = "",
         rotate_token: str = "",
         is_primary: bool = False,
+        container: str = "",
+        on_demand: bool = False,
+        enabled: bool | None = None,
     ) -> None:
         self.name = name
         self.proxy_url = proxy_url
         self.rotate_url = rotate_url
         self.rotate_token = rotate_token
         self.is_primary = is_primary
+        self.container = container
+        self.on_demand = on_demand
+        self.enabled: bool = (not on_demand) if enabled is None else enabled
+        self.starting: bool = False
+        self.stopping: bool = False
+        self.last_used_at: float = time.monotonic()
+        self.last_summon_failed_at: float = 0.0
+        self._state_cond = threading.Condition()
         self._lock = _ROTATE_LOCK if is_primary else threading.Lock()
         self._gen = 0
         self._active_cond = _ACTIVE_COND if is_primary else threading.Condition()
@@ -368,6 +387,21 @@ class UpstreamWorker:
             return UPSTREAM_ROTATE_TOKEN
         return self.rotate_token
 
+    def health_url(self) -> str:
+        p = self.effective_proxy_url().strip()
+        if not p:
+            return ""
+        parsed = urlsplit(p)
+        if not parsed.scheme or not parsed.hostname:
+            return ""
+        host_port = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        if parsed.port is not None:
+            host_port = f"{host_port}:{parsed.port}"
+        return f"{parsed.scheme}://{host_port}/health"
+
+    def touch_used(self) -> None:
+        self.last_used_at = time.monotonic()
+
     def get_gen(self) -> int:
         if self.is_primary:
             return _ROTATE_GEN
@@ -386,6 +420,7 @@ class UpstreamWorker:
 
     def begin_stream(self) -> None:
         global _ACTIVE_STREAMS
+        self.touch_used()
         with self._active_cond:
             if self.is_primary:
                 _ACTIVE_STREAMS += 1
@@ -395,6 +430,7 @@ class UpstreamWorker:
     def end_stream(self) -> None:
         global _ACTIVE_STREAMS
         deferred_gen: int | None = None
+        self.touch_used()
         with self._active_cond:
             if self.is_primary:
                 if _ACTIVE_STREAMS > 0:
@@ -415,6 +451,8 @@ class UpstreamWorker:
             and deferred_gen == self.get_gen()
             and self.effective_rotate_url()
             and not self.rotating
+            and self.enabled
+            and not self.stopping
         ):
             log(f"Active stream(s) completed on {self.name}; running deferred WARP rotation...")
             threading.Thread(
@@ -451,6 +489,7 @@ class UpstreamWorker:
     def record_success(self) -> None:
         now = time.monotonic()
         self.last_success_at = now
+        self.last_used_at = now
         self.last_success_gen = self.get_gen()
         self.cooldown_until = 0.0
         self._burst_retry_gen = None
@@ -549,31 +588,60 @@ class UpstreamWorker:
         now = time.monotonic()
         return {
             "name": self.name,
+            "container": self.container or None,
+            "on_demand": self.on_demand,
+            "enabled": self.enabled,
+            "starting": self.starting,
             "proxy_configured": bool(self.effective_proxy_url()),
             "rotate_configured": bool(self.effective_rotate_url()),
             "active_streams": self.get_active_streams(),
             "rotating": self.rotating,
+            "pending_rotate": self.pending_rotate,
             "in_cooldown": self.cooldown_until > now,
             "generation": self.get_gen(),
         }
 
 
 class WorkerPool:
-    """Manages one or more upstream WARP proxy workers for concurrent requests."""
+    """Manages standby and summon-on-event WARP proxy workers for concurrent requests."""
 
-    def __init__(self, worker_specs: list[dict[str, str]]) -> None:
+    def __init__(
+        self,
+        worker_specs: list[dict[str, Any]],
+        *,
+        standby: int = 0,
+        max_workers: int = 0,
+        idle_sec: float = 600.0,
+        summon_timeout_sec: float = 25.0,
+        reaper_interval_sec: float = 30.0,
+    ) -> None:
         self.workers: list[UpstreamWorker] = []
-        if worker_specs:
-            for idx, spec in enumerate(worker_specs):
-                proxy = spec.get("proxy", "")
-                label = proxy or spec.get("rotate", "") or f"worker-{idx}"
+        specs = list(worker_specs)
+        if max_workers > 0 and len(specs) > max_workers:
+            specs = specs[:max_workers]
+
+        if specs:
+            eff_standby = max(1, min(standby, len(specs))) if standby > 0 else 0
+            for idx, spec in enumerate(specs):
+                proxy = str(spec.get("proxy") or "")
+                rotate = str(spec.get("rotate") or "")
+                token = str(spec.get("token") or "")
+                container = str(spec.get("container") or "")
+                if eff_standby > 0:
+                    on_demand = idx >= eff_standby
+                else:
+                    on_demand = bool(spec.get("on_demand", False))
+                label = container or proxy or rotate or f"worker-{idx}"
                 self.workers.append(
                     UpstreamWorker(
                         name=label,
                         proxy_url=proxy,
-                        rotate_url=spec.get("rotate", ""),
-                        rotate_token=spec.get("token", ""),
+                        rotate_url=rotate,
+                        rotate_token=token,
                         is_primary=(idx == 0),
+                        container=container,
+                        on_demand=on_demand,
+                        enabled=(not on_demand),
                     )
                 )
         else:
@@ -586,13 +654,70 @@ class WorkerPool:
                     is_primary=True,
                 )
             )
+        self.idle_sec = max(0.0, float(idle_sec))
+        self.summon_timeout_sec = max(2.0, float(summon_timeout_sec))
+        self.reaper_interval_sec = max(1.0, float(reaper_interval_sec))
         self._rr_lock = threading.Lock()
         self._rr_idx = 0
+        self._summon_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._manager_thread: threading.Thread | None = None
+
+    def summary(self) -> dict[str, Any]:
+        active = sum(1 for w in self.workers if w.enabled and not w.stopping)
+        standby = sum(1 for w in self.workers if not w.on_demand)
+        starting = sum(1 for w in self.workers if w.starting)
+        return {
+            "total": len(self.workers),
+            "standby": standby,
+            "max": len(self.workers),
+            "active": active,
+            "starting": starting,
+            "idle_sec": self.idle_sec,
+        }
+
+    def enabled_workers(self) -> list[UpstreamWorker]:
+        return [w for w in self.workers if w.enabled and not w.stopping]
+
+    def dormant_workers(self, include_cooling: bool = False) -> list[UpstreamWorker]:
+        now = time.monotonic()
+        return [
+            w
+            for w in self.workers
+            if w.on_demand
+            and not w.enabled
+            and not w.starting
+            and not w.stopping
+            and (include_cooling or (now - w.last_summon_failed_at) >= 15.0)
+        ]
+
+    def has_unburdened_enabled_worker(
+        self, exclude: set[UpstreamWorker] | None = None
+    ) -> bool:
+        now = time.monotonic()
+        for w in self.enabled_workers():
+            if exclude and w in exclude:
+                continue
+            if not w.rotating and w.cooldown_until <= now and w.get_active_streams() == 0:
+                return True
+        return False
+
+    def all_enabled_unusable(
+        self, exclude: set[UpstreamWorker] | None = None
+    ) -> bool:
+        now = time.monotonic()
+        candidates = [
+            w for w in self.enabled_workers() if not exclude or w not in exclude
+        ]
+        if not candidates:
+            return True
+        return all(w.rotating or w.cooldown_until > now for w in candidates)
 
     def pick_worker(self, exclude: set[UpstreamWorker] | None = None) -> UpstreamWorker:
-        candidates = [w for w in self.workers if not exclude or w not in exclude]
+        pool = self.enabled_workers() or self.workers
+        candidates = [w for w in pool if not exclude or w not in exclude]
         if not candidates:
-            candidates = self.workers
+            candidates = pool
         if len(candidates) == 1:
             return candidates[0]
         with self._rr_lock:
@@ -603,11 +728,255 @@ class WorkerPool:
             self._rr_idx = (self._rr_idx + 1) % n
             return chosen
 
+    @staticmethod
+    def _use_sudo_for_docker() -> bool:
+        mode = WORKER_DOCKER_SUDO
+        if mode in ("1", "true", "yes"):
+            return True
+        if mode in ("0", "false", "no"):
+            return False
+        return not os.access("/var/run/docker.sock", os.R_OK | os.W_OK)
+
+    def _run_docker(self, args: list[str], timeout: float = 15.0) -> tuple[bool, str]:
+        cmd = [WORKER_DOCKER_BIN, *args]
+        if self._use_sudo_for_docker():
+            cmd = ["sudo", "-n", *cmd]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            out = (res.stderr or res.stdout or "").strip()
+            return res.returncode == 0, out
+        except Exception as exc:
+            return False, str(exc)
+
+    def _check_worker_health(self, worker: UpstreamWorker, timeout: float = 2.0) -> bool:
+        url = worker.health_url()
+        if not url:
+            return True
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                if resp.status != 200:
+                    return False
+                raw = resp.read().decode("utf-8", errors="replace")
+                if not raw:
+                    return True
+                data = json.loads(raw)
+                if isinstance(data, dict) and "warp_connected" in data:
+                    return bool(data.get("warp_connected"))
+                return True
+        except Exception:
+            return False
+
+    def _boot_claimed_worker(
+        self, worker: UpstreamWorker, timeout: float
+    ) -> UpstreamWorker | None:
+        started_at = time.monotonic()
+        deadline = started_at + max(2.0, timeout)
+        with worker._state_cond:
+            while worker.stopping:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    worker.starting = False
+                    worker.last_summon_failed_at = time.monotonic()
+                    worker._state_cond.notify_all()
+                    return None
+                worker._state_cond.wait(rem)
+
+        healthy = self._check_worker_health(worker, timeout=1.5)
+        if not healthy and worker.container:
+            log(f"Summoning on-demand worker {worker.name} ({worker.container})...")
+            ok, err = self._run_docker(["start", worker.container], timeout=15.0)
+            if not ok:
+                log(f"Warning: failed to start container {worker.container}: {err}")
+                with worker._state_cond:
+                    worker.starting = False
+                    worker.last_summon_failed_at = time.monotonic()
+                    worker._state_cond.notify_all()
+                return None
+
+        while not healthy and time.monotonic() < deadline:
+            healthy = self._check_worker_health(worker, timeout=2.0)
+            if healthy:
+                break
+            time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
+
+        with worker._state_cond:
+            worker.starting = False
+            if healthy:
+                now = time.monotonic()
+                worker.enabled = True
+                worker.cooldown_until = 0.0
+                worker.last_used_at = now
+                worker.last_summon_failed_at = 0.0
+                worker._state_cond.notify_all()
+                log(
+                    f"Summoned worker {worker.name} ready in "
+                    f"{now - started_at:.1f}s."
+                )
+                return worker
+            worker.last_summon_failed_at = time.monotonic()
+            worker._state_cond.notify_all()
+        log(f"Warning: summoned worker {worker.name} timed out before becoming healthy.")
+        return None
+
+    def _wait_for_starting_worker(
+        self, worker: UpstreamWorker, timeout: float
+    ) -> UpstreamWorker | None:
+        deadline = time.monotonic() + max(0.5, timeout)
+        with worker._state_cond:
+            while worker.starting:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    return None
+                worker._state_cond.wait(rem)
+            return worker if worker.enabled and not worker.stopping else None
+
+    def summon_next_sync(
+        self,
+        timeout: float | None = None,
+        exclude: set[UpstreamWorker] | None = None,
+    ) -> UpstreamWorker | None:
+        eff_timeout = self.summon_timeout_sec if timeout is None else max(1.0, timeout)
+        target: UpstreamWorker | None = None
+        claimed = False
+        with self._summon_lock:
+            starting = [
+                w for w in self.workers if w.starting and (not exclude or w not in exclude)
+            ]
+            if starting:
+                target = starting[0]
+                claimed = False
+            else:
+                dormant = [
+                    w for w in self.dormant_workers() if not exclude or w not in exclude
+                ]
+                if dormant:
+                    target = dormant[0]
+                    target.starting = True
+                    claimed = True
+        if target is None:
+            return None
+        if not claimed:
+            res = self._wait_for_starting_worker(target, eff_timeout)
+            if res is not None:
+                return res
+            # If the in-flight boot failed, fall through to try claiming next dormant worker
+            return self.summon_next_sync(
+                timeout=eff_timeout,
+                exclude=(exclude or set()) | {target},
+            )
+        return self._boot_claimed_worker(target, eff_timeout)
+
+    def summon_next_async(self) -> UpstreamWorker | None:
+        target: UpstreamWorker | None = None
+        with self._summon_lock:
+            if any(w.starting for w in self.workers):
+                return None
+            dormant = self.dormant_workers()
+            if not dormant:
+                return None
+            target = dormant[0]
+            target.starting = True
+        threading.Thread(
+            target=self._boot_claimed_worker,
+            args=(target, self.summon_timeout_sec),
+            daemon=True,
+        ).start()
+        return target
+
+    def reconcile_startup(self) -> None:
+        for w in self.workers:
+            if w.on_demand:
+                if self._check_worker_health(w, timeout=1.0):
+                    with w._state_cond:
+                        w.enabled = True
+                        w.last_used_at = time.monotonic()
+                    log(f"Adopted already-running on-demand worker {w.name}.")
+            else:
+                with w._state_cond:
+                    w.enabled = True
+                if w.container and not self._check_worker_health(w, timeout=1.0):
+                    ok, err = self._run_docker(["start", w.container], timeout=15.0)
+                    if not ok:
+                        log(f"Warning: standby container {w.container} start failed: {err}")
+
+    def reap_idle_workers(self, now: float | None = None) -> int:
+        if self.idle_sec <= 0:
+            return 0
+        cur_now = time.monotonic() if now is None else now
+        stopped = 0
+        for w in self.workers:
+            if not w.on_demand:
+                continue
+            should_stop = False
+            with self._summon_lock:
+                if (
+                    w.enabled
+                    and not w.starting
+                    and not w.stopping
+                    and not w.rotating
+                    and w.get_active_streams() == 0
+                    and (cur_now - w.last_used_at) >= self.idle_sec
+                ):
+                    w.enabled = False
+                    w.stopping = True
+                    should_stop = True
+            if not should_stop:
+                continue
+            log(
+                f"Worker {w.name} idle for {int(cur_now - w.last_used_at)}s "
+                f"(>= {int(self.idle_sec)}s); despawning..."
+            )
+            if w.container:
+                ok, err = self._run_docker(["stop", w.container], timeout=25.0)
+                if not ok:
+                    log(f"Warning: failed stopping idle container {w.container}: {err}")
+            with w._state_cond:
+                w.stopping = False
+                w._state_cond.notify_all()
+            stopped += 1
+        return stopped
+
+    def start_manager(self) -> None:
+        if not any(w.on_demand or w.container for w in self.workers):
+            return
+        if self._manager_thread is not None and self._manager_thread.is_alive():
+            return
+        self._stop_event.clear()
+
+        def _loop() -> None:
+            try:
+                self.reconcile_startup()
+            except Exception as exc:
+                log(f"Warning: worker pool reconcile_startup failed: {exc}")
+            while not self._stop_event.wait(self.reaper_interval_sec):
+                try:
+                    self.reap_idle_workers()
+                except Exception as exc:
+                    log(f"Warning: worker pool idle reaper failed: {exc}")
+
+        self._manager_thread = threading.Thread(
+            target=_loop, name="worker-pool-manager", daemon=True
+        )
+        self._manager_thread.start()
+
+    def stop_manager(self) -> None:
+        self._stop_event.set()
+        t = self._manager_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=2.0)
+
     def snapshot(self) -> list[dict[str, Any]]:
         return [w.snapshot() for w in self.workers]
 
 
-WORKER_POOL = WorkerPool(UPSTREAM_WORKERS)
+WORKER_POOL = WorkerPool(
+    UPSTREAM_WORKERS,
+    standby=WORKERS_STANDBY,
+    max_workers=WORKERS_MAX,
+    idle_sec=WORKER_IDLE_SEC,
+    summon_timeout_sec=WORKER_SUMMON_TIMEOUT_SEC,
+    reaper_interval_sec=WORKER_REAPER_INTERVAL_SEC,
+)
 
 
 def begin_active_stream(conn: http.client.HTTPConnection | None = None) -> None:
@@ -683,6 +1052,19 @@ def open_inference_with_retry(
         return st, None, None, body
 
     while True:
+        remaining_before = deadline - time.monotonic()
+        if len(WORKER_POOL.workers) > len(WORKER_POOL.enabled_workers()):
+            if (
+                WORKER_POOL.all_enabled_unusable(exclude=tried_workers)
+                and remaining_before > 3.0
+            ):
+                WORKER_POOL.summon_next_sync(
+                    timeout=min(WORKER_POOL.summon_timeout_sec, remaining_before - 1.0),
+                    exclude=tried_workers,
+                )
+            elif not WORKER_POOL.has_unburdened_enabled_worker(exclude=tried_workers):
+                WORKER_POOL.summon_next_async()
+
         worker = WORKER_POOL.pick_worker(exclude=tried_workers)
         with worker._lock:
             gen_before = worker.get_gen()
@@ -726,9 +1108,19 @@ def open_inference_with_retry(
             if remaining_budget <= 0:
                 return _finish_error(st, body)
 
+            enabled_untried = [
+                w
+                for w in WORKER_POOL.enabled_workers()
+                if w not in tried_workers and w != worker
+            ]
+            has_summonable = bool(
+                WORKER_POOL.dormant_workers()
+                or any(w.starting for w in WORKER_POOL.workers)
+            )
+
             if is_rate_limit_error(st, body):
-                # Multi-worker failover first: move immediately to another warm worker
-                if multi_worker and len(tried_workers) + 1 < len(WORKER_POOL.workers):
+                # Multi-worker failover first: move immediately to another warm enabled worker
+                if multi_worker and enabled_untried:
                     tried_workers.add(worker)
                     worker.cooldown_until = time.monotonic() + 5.0
                     failovers_used += 1
@@ -745,9 +1137,36 @@ def open_inference_with_retry(
                         ).start()
                     log(
                         f"Worker {worker.name} hit 429; failing over to next worker "
-                        f"({failovers_used}/{len(WORKER_POOL.workers) - 1})..."
+                        f"({failovers_used}/{max(1, len(WORKER_POOL.enabled_workers()) - 1)})..."
                     )
                     continue
+
+                # Summon an on-demand worker when enabled pool is exhausted or stream-protected
+                if multi_worker and has_summonable and remaining_budget > 2.0:
+                    tried_workers.add(worker)
+                    worker.cooldown_until = time.monotonic() + 5.0
+                    if (
+                        worker.effective_rotate_url()
+                        and worker.get_active_streams() == 0
+                        and not worker.rotating
+                    ):
+                        threading.Thread(
+                            target=worker.rotate_for_generation,
+                            args=(gen_before,),
+                            kwargs={"grace_sec": 0.0, "allow_force": False},
+                            daemon=True,
+                        ).start()
+                    summoned = WORKER_POOL.summon_next_sync(
+                        timeout=min(WORKER_POOL.summon_timeout_sec, remaining_budget - 1.0),
+                        exclude=tried_workers,
+                    )
+                    if summoned is not None:
+                        failovers_used += 1
+                        log(
+                            f"Summoned on-demand worker {summoned.name} after 429; "
+                            "retrying on fresh egress..."
+                        )
+                        continue
 
                 # Burst-429 backoff on a recently healthy IP before tearing down WARP
                 if (
@@ -796,11 +1215,21 @@ def open_inference_with_retry(
                     inflight_rot_retries += 1
                     log(f"Upstream HTTP {st} during concurrent rotation; retrying on fresh IP...")
                     continue
-                if multi_worker and len(tried_workers) + 1 < len(WORKER_POOL.workers):
+                if multi_worker and enabled_untried:
                     tried_workers.add(worker)
                     worker.cooldown_until = time.monotonic() + 3.0
                     log(f"Worker {worker.name} returned HTTP {st}; failing over to next worker...")
                     continue
+                if multi_worker and has_summonable and remaining_budget > 2.0:
+                    tried_workers.add(worker)
+                    worker.cooldown_until = time.monotonic() + 3.0
+                    summoned = WORKER_POOL.summon_next_sync(
+                        timeout=min(WORKER_POOL.summon_timeout_sec, remaining_budget - 1.0),
+                        exclude=tried_workers,
+                    )
+                    if summoned is not None:
+                        log(f"Summoned on-demand worker {summoned.name} after HTTP {st}; retrying...")
+                        continue
                 if transient_used < UPSTREAM_RETRY_COUNT:
                     transient_used += 1
                     log(f"Transient upstream HTTP {st}; retrying ({transient_used}/{UPSTREAM_RETRY_COUNT})...")
@@ -828,17 +1257,38 @@ def open_inference_with_retry(
                     pass
             last_st = 502
             last_body = {"error": {"message": f"Bridge upstream error: {exc}"}}
-            if time.monotonic() >= deadline:
+            remaining_budget = deadline - time.monotonic()
+            if remaining_budget <= 0:
                 return _finish_error(last_st, last_body)
             with worker._lock:
                 rotated_while_inflight = worker.get_gen() != gen_before
             if rotated_while_inflight and inflight_rot_retries < max_inflight_rot_retries:
                 inflight_rot_retries += 1
                 continue
-            if multi_worker and len(tried_workers) + 1 < len(WORKER_POOL.workers):
+            enabled_untried = [
+                w
+                for w in WORKER_POOL.enabled_workers()
+                if w not in tried_workers and w != worker
+            ]
+            if multi_worker and enabled_untried:
                 tried_workers.add(worker)
                 worker.cooldown_until = time.monotonic() + 3.0
                 continue
+            if (
+                multi_worker
+                and (
+                    WORKER_POOL.dormant_workers()
+                    or any(w.starting for w in WORKER_POOL.workers)
+                )
+                and remaining_budget > 2.0
+            ):
+                tried_workers.add(worker)
+                worker.cooldown_until = time.monotonic() + 3.0
+                summoned = WORKER_POOL.summon_next_sync(
+                    timeout=min(WORKER_POOL.summon_timeout_sec, remaining_budget - 1.0)
+                )
+                if summoned is not None:
+                    continue
             if transient_used < UPSTREAM_RETRY_COUNT:
                 transient_used += 1
                 time.sleep(0.5)

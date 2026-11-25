@@ -24,10 +24,15 @@ def parse_upstream_workers(
     fallback_proxy: str = "",
     fallback_rotate: str = "",
     fallback_token: str = "",
-) -> list[dict[str, str]]:
-    """Parse BRIDGE_UPSTREAM_WORKERS (CSV or JSON) with single-proxy fallback."""
+    *,
+    worker_prefix: str = "",
+    worker_base_port: int = 0,
+    standby_workers: int = 0,
+    max_workers: int = 0,
+) -> list[dict[str, object]]:
+    """Parse BRIDGE_UPSTREAM_WORKERS (CSV or JSON) with single-proxy or fleet fallback."""
     spec = raw_workers.strip()
-    workers: list[dict[str, str]] = []
+    workers: list[dict[str, object]] = []
     if spec:
         if spec.startswith("["):
             try:
@@ -50,13 +55,16 @@ def parse_upstream_workers(
                         r = str(item.get("rotate") or item.get("rotate_url") or "").strip()
                         t = str(item.get("token") or item.get("rotate_token") or fallback_token).strip()
                         if p or r:
-                            workers.append(
-                                {
-                                    "proxy": p,
-                                    "rotate": r or (derive_rotate_url(p) if p else ""),
-                                    "token": t,
-                                }
-                            )
+                            entry: dict[str, object] = {
+                                "proxy": p,
+                                "rotate": r or (derive_rotate_url(p) if p else ""),
+                                "token": t,
+                            }
+                            if item.get("container"):
+                                entry["container"] = str(item["container"]).strip()
+                            if "on_demand" in item:
+                                entry["on_demand"] = bool(item["on_demand"])
+                            workers.append(entry)
         else:
             for part in spec.split(","):
                 p = part.strip()
@@ -79,6 +87,23 @@ def parse_upstream_workers(
                 "token": fallback_token,
             }
         )
+    elif max_workers > 0 and (worker_base_port > 0 or worker_prefix):
+        base_port = worker_base_port if worker_base_port > 0 else 40011
+        prefix = worker_prefix or "warp-worker"
+        for idx in range(max_workers):
+            port = base_port + idx
+            p = f"http://127.0.0.1:{port}"
+            workers.append(
+                {
+                    "proxy": p,
+                    "rotate": derive_rotate_url(p),
+                    "token": fallback_token,
+                    "container": f"{prefix}-{idx + 1}",
+                    "on_demand": (standby_workers > 0 and idx >= standby_workers),
+                }
+            )
+    if max_workers > 0 and len(workers) > max_workers:
+        workers = workers[:max_workers]
     return workers
 
 
@@ -166,11 +191,35 @@ SIGNATURE_MODE = os.environ.get("BRIDGE_SIGNATURE_MODE", "auto").strip().lower()
 UPSTREAM_PROXY_URL = os.environ.get("BRIDGE_UPSTREAM_PROXY", "").strip()
 UPSTREAM_ROTATE_URL = os.environ.get("BRIDGE_UPSTREAM_ROTATE_URL", "").strip()
 UPSTREAM_ROTATE_TOKEN = os.environ.get("BRIDGE_UPSTREAM_ROTATE_TOKEN", "").strip()
+WORKERS_STANDBY = max(0, int(os.environ.get("BRIDGE_WORKERS_STANDBY", "0") or "0"))
+WORKERS_MAX = max(0, int(os.environ.get("BRIDGE_WORKERS_MAX", "0") or "0"))
+if WORKERS_MAX > 0 and WORKERS_STANDBY > WORKERS_MAX:
+    WORKERS_STANDBY = WORKERS_MAX
+WORKER_IDLE_SEC = max(0.0, float(os.environ.get("BRIDGE_WORKER_IDLE_SEC", "600") or "600"))
+WORKER_SUMMON_TIMEOUT_SEC = max(
+    2.0, float(os.environ.get("BRIDGE_WORKER_SUMMON_TIMEOUT_SEC", "25") or "25")
+)
+WORKER_REAPER_INTERVAL_SEC = max(
+    5.0, float(os.environ.get("BRIDGE_WORKER_REAPER_INTERVAL_SEC", "30") or "30")
+)
+WORKER_PREFIX = os.environ.get("BRIDGE_WORKER_PREFIX", "").strip()
+WORKER_BASE_PORT = max(0, int(os.environ.get("BRIDGE_WORKER_BASE_PORT", "0") or "0"))
+WORKER_DOCKER_BIN = resolve_binary(
+    "BRIDGE_WORKER_DOCKER_BIN",
+    "docker",
+    ["/usr/bin/docker", "/usr/local/bin/docker"],
+)
+WORKER_DOCKER_SUDO = os.environ.get("BRIDGE_WORKER_DOCKER_SUDO", "auto").strip().lower()
+
 UPSTREAM_WORKERS = parse_upstream_workers(
     os.environ.get("BRIDGE_UPSTREAM_WORKERS", ""),
     fallback_proxy=UPSTREAM_PROXY_URL,
     fallback_rotate=UPSTREAM_ROTATE_URL,
     fallback_token=UPSTREAM_ROTATE_TOKEN,
+    worker_prefix=WORKER_PREFIX,
+    worker_base_port=WORKER_BASE_PORT,
+    standby_workers=WORKERS_STANDBY,
+    max_workers=WORKERS_MAX,
 )
 
 REQUEST_TIMEOUT_SEC = float(os.environ.get("BRIDGE_REQUEST_TIMEOUT", "240"))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -102,6 +103,44 @@ class TestConfig(unittest.TestCase):
                 }
             ],
         )
+
+    def test_parse_upstream_workers_fleet_metadata_and_generation(self) -> None:
+        raw = json.dumps(
+            [
+                {
+                    "proxy": "http://127.0.0.1:40011",
+                    "container": "warp-worker-1",
+                    "on_demand": False,
+                },
+                {
+                    "proxy": "http://127.0.0.1:40012",
+                    "container": "warp-worker-2",
+                    "on_demand": True,
+                },
+                {
+                    "proxy": "http://127.0.0.1:40013",
+                    "container": "warp-worker-3",
+                    "on_demand": True,
+                },
+            ]
+        )
+        capped = cfg.parse_upstream_workers(raw, max_workers=2)
+        self.assertEqual(len(capped), 2)
+        self.assertEqual(capped[1]["container"], "warp-worker-2")
+        self.assertTrue(capped[1]["on_demand"])
+
+        generated = cfg.parse_upstream_workers(
+            "",
+            worker_prefix="warp-worker",
+            worker_base_port=40011,
+            standby_workers=3,
+            max_workers=5,
+        )
+        self.assertEqual(len(generated), 5)
+        self.assertEqual(generated[0]["container"], "warp-worker-1")
+        self.assertFalse(generated[2]["on_demand"])
+        self.assertTrue(generated[3]["on_demand"])
+        self.assertEqual(generated[4]["proxy"], "http://127.0.0.1:40015")
 
 
 if __name__ == "__main__":

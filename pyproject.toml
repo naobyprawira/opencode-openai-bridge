@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opencode-openai-bridge"
-version = "0.5.6"
+version = "0.5.7"
 description = "OpenAI-compatible HTTP bridge to OpenCode free inference models using Bun TLS/HTTP2 forwarding."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
-opencode-openai-bridge = "opencode_bridge.server:main"
+opencode-openai-bridge = "opencode_bridge.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
